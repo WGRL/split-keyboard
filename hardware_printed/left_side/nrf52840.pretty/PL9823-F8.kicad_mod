@@ -1,0 +1,98 @@
+(footprint "PL9823-F8"
+	(version 20260206)
+	(generator "pcbnew")
+	(generator_version "10.0")
+	(layer "F.Cu")
+	(descr "integrate RGB LED with Control IC at same body")
+	(tags "rgb,led")
+	(property "Reference" "REF**"
+		(at 0.02 2.81 180)
+		(layer "F.SilkS")
+		(uuid "217ff93a-c53e-4012-9a55-367fc861a4f6")
+		(effects
+			(font
+				(size 1 1)
+				(thickness 0.15)
+			)
+		)
+	)
+	(property "Value" "PL9823-F8"
+		(at -1.5 -2 0)
+		(layer "F.Fab")
+		(uuid "0f81ab23-0f20-4f04-8336-9ea60804898b")
+		(effects
+			(font
+				(size 1 1)
+				(thickness 0.15)
+			)
+		)
+	)
+	(property "Datasheet" ""
+		(at 0 0 0)
+		(layer "F.Fab")
+		(hide yes)
+		(uuid "02ab4541-594c-4f4f-90b0-7e75eda6f822")
+		(effects
+			(font
+				(size 1.27 1.27)
+			)
+		)
+	)
+	(property "Description" ""
+		(at 0 0 0)
+		(layer "F.Fab")
+		(hide yes)
+		(uuid "49bfd9c8-76a8-4ba9-b9bc-8eb95f5c5cf0")
+		(effects
+			(font
+				(size 1.27 1.27)
+			)
+		)
+	)
+	(attr through_hole)
+	(duplicate_pad_numbers_are_jumpers no)
+	(fp_circle
+		(center 0 0)
+		(end 5 -0.47)
+		(stroke
+			(width 0.1)
+			(type default)
+		)
+		(fill no)
+		(layer "F.SilkS")
+		(uuid "aa1b5971-c401-4647-bf0c-e987d4b1ba06")
+	)
+	(pad "1" thru_hole rect
+		(at 0.35 0)
+		(size 0.9 1.3)
+		(drill 0.7)
+		(layers "*.Cu" "*.Mask")
+		(remove_unused_layers no)
+		(uuid "2efe62f1-e6ef-4889-8594-f6fdca27cb6a")
+	)
+	(pad "2" thru_hole oval
+		(at 1.75 0)
+		(size 0.9 1.3)
+		(drill 0.7)
+		(layers "*.Cu" "*.Mask")
+		(remove_unused_layers no)
+		(uuid "1bcecf95-d45d-420e-86cb-994687165158")
+	)
+	(pad "3" thru_hole oval
+		(at -1 0)
+		(size 0.9 1.3)
+		(drill 0.7)
+		(layers "*.Cu" "*.Mask")
+		(remove_unused_layers no)
+		(uuid "cee50f00-48d3-419f-8d07-652385909c69")
+	)
+	(pad "4" thru_hole oval
+		(at -2.25 0)
+		(size 0.9 1.3)
+		(drill 0.7)
+		(layers "*.Cu" "*.Mask")
+		(remove_unused_layers no)
+		(uuid "3c571cd4-8583-4d8b-b656-a9eeac38c623")
+	)
+	(embedded_fonts no)
+)

@@ -1,0 +1,188 @@
+
+/ {
+    #include "left.overlay"
+    
+
+    leds {
+        compatible = "gpio-leds";
+
+        led_red: led_red {
+            gpios = <&gpio0 17 GPIO_ACTIVE_LOW>;
+        };
+
+        led_green: led_green {
+            gpios = <&gpio0 18 GPIO_ACTIVE_LOW>;
+        };
+
+        led_blue: led_blue {
+            gpios = <&gpio0 19 GPIO_ACTIVE_LOW>;
+        };
+
+    };
+        
+    
+    keyboard {
+        compatible = "gpio-keys";
+
+        row1: row1 {
+            gpios = <&xiao_d 6 GPIO_ACTIVE_LOW>; 
+        };
+
+        row2: row2 {
+            gpios = <&xiao_d 5 GPIO_ACTIVE_LOW>; 
+        };
+
+        row3: row3 {
+            gpios = <&xiao_d 4 GPIO_ACTIVE_LOW>; 
+        };
+        row4: row4 {
+            gpios = <&xiao_d 3 GPIO_ACTIVE_LOW>; 
+        };
+        row5: row5 {
+            gpios = <&xiao_d 2 GPIO_ACTIVE_LOW>; 
+        };
+
+        col1: col1 {
+            gpios = <&xiao_d 7 GPIO_ACTIVE_LOW>; 
+        };
+
+        col2: col2 {
+            gpios = <&xiao_d 8 GPIO_ACTIVE_LOW>; 
+        };
+
+        col3: col3 {
+            gpios = <&xiao_d 9 GPIO_ACTIVE_LOW>;  
+        };
+
+        col4: col4 {
+            gpios = <&xiao_d 10 GPIO_ACTIVE_LOW>;  
+        };
+
+        col5: col5 {
+            gpios = <&xiao_d 0 GPIO_ACTIVE_LOW>; 
+        };
+
+        col6: col6 {
+            gpios = <&xiao_d 1 GPIO_ACTIVE_LOW>; 
+        };
+    };
+
+    aliases {
+        led0 = &led_red;
+        led1 = &led_green;
+        led2 = &led_blue;
+        col1 = &col1;
+        col2 = &col2;
+        col3 = &col3;
+        col4 = &col4;
+        col5 = &col5;
+        col6 = &col6;
+        row1 = &row1;
+        row2 = &row2;
+        row3 = &row3;
+        row4 = &row4;
+        row5 = &row5;
+    };
+
+};
+&uicr { // enable nfc as gpio
+    nfct-pins-as-gpios;
+};
+
+&uart1 {
+    status = "disabled";
+};
+
+/* Wyłącz wszystkie niepotrzebne UART */
+&uart0 {
+    status = "disabled";
+};
+&uart1 {
+    status = "disabled";
+};
+
+
+/* other SPI off*/
+&spi0 {
+    status = "disabled";
+};
+&spi2 {
+    status = "disabled";
+};
+&spi3 {
+    status = "disabled";
+};
+
+/* I2C useless */
+&i2c0 {
+    status = "disabled";
+};
+&i2c1 {
+    status = "disabled";
+};
+
+/* QSPI useless */
+&qspi {
+    status = "disabled";
+};
+
+/* PWM useless */
+&pwm0 {
+    status = "disabled";
+};
+&pwm1 {
+    status = "disabled";
+};
+&pwm2 {
+    status = "disabled";
+};
+
+
+&pinctrl {
+    /delete-node/ spi1_default;
+    /delete-node/ spi1_sleep;
+    
+    spi1_default: spi1_default {
+        group1 {
+            psels = <NRF_PSEL(SPIM_SCK, 0, 12)>,  
+                   <NRF_PSEL(SPIM_MOSI, 0, 9)>,  
+                   <NRF_PSEL_DISCONNECTED(SPIM_MISO)>; 
+            bias-pull-down;
+        };
+    };
+
+    spi1_sleep: spi1_sleep {
+        group1 {
+            psels = <NRF_PSEL(SPIM_SCK, 0, 12)>,
+                   <NRF_PSEL(SPIM_MOSI, 0, 9)>,
+                   <NRF_PSEL_DISCONNECTED(SPIM_MISO)>;
+            low-power-enable;
+        };
+    };
+};
+
+&spi1 {
+    status = "okay";
+    pinctrl-0 = <&spi1_default>;
+    pinctrl-1 = <&spi1_sleep>;
+    pinctrl-names = "default", "sleep";
+    cs-gpios = <&gpio0 11 GPIO_ACTIVE_LOW>; /* P0.11 as CS (inside pin)  */
+
+    led_strip: led_strip@0 {
+        compatible = "worldsemi,ws2812-spi";
+        reg = <0>;
+        chain-length = <5>;
+        
+        spi-cpol;
+        spi-cpha;
+        
+        spi-max-frequency = <4000000>;
+        reset-delay = <300>;
+        spi-one-frame = <0xF8>;
+        spi-zero-frame = <0x80>;
+        
+        color-mapping = <1 2 3>;
+    };
+};
+
+

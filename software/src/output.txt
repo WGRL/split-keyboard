@@ -1,0 +1,2566 @@
+
+============================================================
+PLIK: ./leds/leds.c
+============================================================
+
+#include "leds.h"
+
+const struct gpio_dt_spec led_red = GPIO_DT_SPEC_GET(LED0_NODE, gpios);
+const struct gpio_dt_spec led_green = GPIO_DT_SPEC_GET(LED1_NODE, gpios);
+const struct gpio_dt_spec led_blue = GPIO_DT_SPEC_GET(LED2_NODE, gpios);
+// const struct gpio_dt_spec led_din = GPIO_DT_SPEC_GET(LED3_NODE, gpios);
+
+const struct device *strip = DEVICE_DT_GET(DT_NODELABEL(led_strip));
+static struct led_rgb pixels[LED_SIZE];
+
+static void set_color(int r, int g, int b) {
+
+  for (int i = 0; i < LED_SIZE; i++) {
+    pixels[i].r = r;
+    pixels[i].g = g;
+    pixels[i].b = b;
+  }
+  int ret = led_strip_update_rgb(strip, pixels, LED_SIZE);
+  // printk("ret=%d\n", ret);
+}
+
+// potem zrob osobne flagi, zeby kolory mogly sie mieszac
+// albo zeby bylo pol na pol, tez cool
+static void color_switch() {
+  switch (led_state) {
+  case black:
+    set_color(0, 0, 0);
+    break;
+  case white:
+    set_color(255, 255, 255);
+    break;
+  case red:
+    set_color(255, 0, 0);
+    break;
+  case green:
+    set_color(0, 255, 0);
+    break;
+  case blue:
+    set_color(0, 0, 255);
+    break;
+  }
+}
+
+void led_task(void *p1, void *p2, void *p3) {
+
+  while (1) {
+    underglow();
+    color_switch();
+    k_sleep(K_MSEC(200));
+  }
+}
+
+void underglow() {
+  bool usb_status = nrf_power_usbregstatus_vbusdet_get(NRF_POWER);
+  if (!usb_status)
+    gpio_pin_set_dt(&led_red, 1);
+  else {
+    gpio_pin_set_dt(&led_red, 1);
+  }
+}
+
+
+
+============================================================
+PLIK: ./leds/leds.h
+============================================================
+
+#ifndef LEDS_H
+#define LEDS_H
+
+#include "../bus/bus.h"
+#include <hal/nrf_power.h>
+#include <zephyr/drivers/gpio.h>
+#include <zephyr/drivers/led_strip.h>
+#include <zephyr/kernel.h>
+#include <zephyr/sys/printk.h>
+
+#define LED_SIZE 4
+
+#define LED0_NODE DT_ALIAS(led0)
+#define LED1_NODE DT_ALIAS(led1)
+#define LED2_NODE DT_ALIAS(led2)
+
+// #define LED3_NODE DT_ALIAS(led3)
+
+extern const struct gpio_dt_spec led_red;
+extern const struct gpio_dt_spec led_green;
+extern const struct gpio_dt_spec led_blue;
+
+void underglow();
+void led_task(void *p1, void *p2, void *p3);
+
+#endif
+
+
+
+============================================================
+PLIK: ./bus/bus.h
+============================================================
+
+#ifndef BUS_H
+#define BUS_H
+
+#include <hal/nrf_power.h>
+#include <stdint.h>
+#include <zephyr/kernel.h>
+
+#define ROW_SIZE 5
+#define COL_SIZE 6
+
+#define HID_LIM 6
+#define KB_REPORT_LEN 9
+#define XY_LIMIT 200
+
+#define MATRIX_FREQ 5
+#define USB_FREQ 15
+#define RET_FINE 0
+#define INTERVAL_MUL 125 / 100
+
+extern int values_table_l[5][6];
+extern int values_table_r[5][6];
+
+enum side { left, right, no_side };
+enum state { pressed, released };
+enum led_color { black, white, red, green, blue };
+
+// structures
+struct pos {
+  enum state state;
+  enum side side;
+  uint8_t x;
+  uint8_t y;
+  uint8_t modifier;
+};
+
+struct key_code {
+  uint8_t value;
+  uint8_t modifier;
+};
+
+enum kb_report_idx {
+  KB_MOD_KEY = 0,
+  KB_RESERVED,
+  KB_KEY_CODE1,
+  KB_KEY_CODE2,
+  KB_KEY_CODE3,
+  KB_KEY_CODE4,
+  KB_KEY_CODE5,
+  KB_KEY_CODE6,
+  KB_REPORT_COUNT,
+};
+
+extern bool usb_ready;
+
+extern struct k_msgq msgq_key;
+extern struct k_msgq msgq_kb_report;
+extern struct k_msgq msgq_peripheral_report;
+extern struct k_msgq msgq_key_codes;
+
+extern enum led_color led_state;
+extern struct k_sem ble_init_sem;
+extern struct k_sem usb_sem;
+extern uint16_t pc_interval;
+
+void pos_reset(struct pos *button);
+uint8_t uint_get_x(uint8_t num);
+uint8_t uint_get_y(uint8_t num);
+bool usb_connected();
+
+#endif
+
+
+
+============================================================
+PLIK: ./bus/bus.c
+============================================================
+
+#include "bus.h"
+
+K_MSGQ_DEFINE(msgq_key, sizeof(struct pos), 30, 1);
+K_MSGQ_DEFINE(msgq_kb_report, KB_REPORT_COUNT * sizeof(uint8_t), 10, 4);
+K_MSGQ_DEFINE(msgq_peripheral_report, KB_REPORT_COUNT * sizeof(uint8_t), 10, 4);
+K_MSGQ_DEFINE(msgq_key_codes, sizeof(struct key_code), 10, 4);
+
+K_SEM_DEFINE(ble_init_sem, 0, 1);
+K_SEM_DEFINE(usb_sem, 0, 1);
+
+enum led_color led_state = black;
+uint16_t pc_interval = USB_FREQ;
+
+bool usb_ready = false;
+int values_table_l[ROW_SIZE][COL_SIZE] = {
+    {0x29, 0x1E, 0x1F, 0x20, 0x21, 0x22}, // ESC, 1,2,3,4,5
+    {0x2B, 0x14, 0x1A, 0x08, 0x15, 0x17}, // TAB, q w e r t
+    {0x39, 0x04, 0x16, 0x07, 0x09, 0x0A}, // CAPS, a s d f g
+    {0xE1, 0x1D, 0x1B, 0x06, 0x19, 0x05}, // SHIFT, z x c v b
+    {0xE0, 0xE3, 0xE2, 0x2C, 0x2F, 0x35}  // CTRL, SUPER, L_ALT, SPACE, [, `
+};
+
+int values_table_r[ROW_SIZE][COL_SIZE] = {
+    {0x23, 0x24, 0x25, 0x26, 0x27, 0x2D}, // 6 7 8 9 0 -
+    {0x1C, 0x18, 0x0C, 0x12, 0x13, 0x2E}, // y u i o p =
+    {0x0B, 0x0D, 0x0E, 0x0F, 0x33, 0x34}, // h j k l ; '
+    {0x11, 0x10, 0x36, 0x37, 0x38, 0x00}, // n m , . / X
+    {0x30, 0x28, 0x31, 0xE6, 0x00, 0x00}  // ] ENTER \ R_ALT X X
+};
+
+void pos_reset(struct pos *button) {
+  button->x = 255;
+  button->y = 255;
+  button->side = no_side;
+}
+
+bool usb_connected() { return nrf_power_usbregstatus_vbusdet_get(NRF_POWER); }
+
+
+
+============================================================
+PLIK: ./matrix/matrix.c
+============================================================
+
+#include "matrix.h"
+#include "syscalls/kernel.h"
+#include <string.h>
+
+#define NO_KEY 255
+
+#define FREQENCY K_MSEC(30)
+#define DEBOUNCE_CHECK 5
+
+#define POSITION_LIMIT 250
+
+#define MOD_CLEAR 0x0
+#define MOD_L_CTRL 0x1
+#define MOD_L_SHIFT 0x2
+#define MOD_L_ALT 0x4
+#define MOD_L_SUP 0x8
+#define MOD_R_ALT 0x40
+
+#ifdef CONFIG_KEYBOARD_SIDE_LEFT
+#define COMMUNICATION_FREQ COMM_FREQ_LEFT
+#else
+#define COMMUNICATION_FREQ COMM_FREQ_RIGHT
+#endif
+
+// gpio defs
+const struct gpio_dt_spec row1 = GPIO_DT_SPEC_GET(ROW1_NODE, gpios);
+const struct gpio_dt_spec row2 = GPIO_DT_SPEC_GET(ROW2_NODE, gpios);
+const struct gpio_dt_spec row3 = GPIO_DT_SPEC_GET(ROW3_NODE, gpios);
+const struct gpio_dt_spec row4 = GPIO_DT_SPEC_GET(ROW4_NODE, gpios);
+const struct gpio_dt_spec row5 = GPIO_DT_SPEC_GET(ROW5_NODE, gpios);
+
+const struct gpio_dt_spec col1 = GPIO_DT_SPEC_GET(COL1_NODE, gpios);
+const struct gpio_dt_spec col2 = GPIO_DT_SPEC_GET(COL2_NODE, gpios);
+const struct gpio_dt_spec col3 = GPIO_DT_SPEC_GET(COL3_NODE, gpios);
+const struct gpio_dt_spec col4 = GPIO_DT_SPEC_GET(COL4_NODE, gpios);
+const struct gpio_dt_spec col5 = GPIO_DT_SPEC_GET(COL5_NODE, gpios);
+const struct gpio_dt_spec col6 = GPIO_DT_SPEC_GET(COL6_NODE, gpios);
+
+#ifdef CONFIG_KEYBOARD_SIDE_LEFT
+static struct pos l_ctrl = {.x = 10, .y = 10};
+static struct pos l_shift = {.x = 11, .y = 11};
+static struct pos l_alt = {.x = 13, .y = 13};
+static struct pos l_super = {.x = 14, .y = 14};
+static struct pos r_alt = {.x = NO_KEY, .y = NO_KEY};
+#else
+static struct pos l_ctrl = {.x = NO_KEY, .y = NO_KEY};
+static struct pos l_shift = {.x = NO_KEY, .y = NO_KEY};
+static struct pos l_alt = {.x = NO_KEY, .y = NO_KEY};
+static struct pos l_super = {.x = NO_KEY, .y = NO_KEY};
+static struct pos r_alt = {.x = 12, .y = 12};
+#endif
+
+static struct pos keys_clicked[HID_LIM];
+static uint8_t hid_kpos;
+
+static struct pos ready_to_send[HID_LIM];
+static uint8_t rts_idx; // ready_to_send index
+//
+// static void print_pos(struct pos *obj) {
+//   printk("x: %d y: %d side: %d state: %d modifiers: %x\n", obj->x, obj->y,
+//          obj->side, obj->state, obj->modifier);
+// }
+
+static uint8_t debounce_table[X_SIZE][Y_SIZE] = {
+    {0, 0, 0, 0, 0}, {0, 0, 0, 0, 0}, {0, 0, 0, 0, 0},
+    {0, 0, 0, 0, 0}, {0, 0, 0, 0, 0}, {0, 0, 0, 0, 0}};
+
+static bool clicked_this_round(uint8_t x, uint8_t y) {
+  for (int i = 0; i < hid_kpos; i++) {
+    if (keys_clicked[i].x == x && keys_clicked[i].y == y) {
+      return 1;
+    }
+  }
+  return 0;
+}
+
+static void verify_clicked() {
+  for (int i = 0; i < X_SIZE; i++) {
+    for (int j = 0; j < Y_SIZE; j++) {
+      if (clicked_this_round(i, j)) {
+        debounce_table[i][j]++;
+        continue;
+      }
+      debounce_table[i][j] = 0;
+    }
+  }
+}
+
+void keyboard_task(void *p1, void *p2, void *p3) {
+  struct matrix mtx = {
+      .rows =
+          {
+              GPIO_DT_SPEC_GET(ROW1_NODE, gpios),
+              GPIO_DT_SPEC_GET(ROW2_NODE, gpios),
+              GPIO_DT_SPEC_GET(ROW3_NODE, gpios),
+              GPIO_DT_SPEC_GET(ROW4_NODE, gpios),
+              GPIO_DT_SPEC_GET(ROW5_NODE, gpios),
+          },
+      .cols =
+          {
+              GPIO_DT_SPEC_GET(COL1_NODE, gpios),
+              GPIO_DT_SPEC_GET(COL2_NODE, gpios),
+              GPIO_DT_SPEC_GET(COL3_NODE, gpios),
+              GPIO_DT_SPEC_GET(COL4_NODE, gpios),
+              GPIO_DT_SPEC_GET(COL5_NODE, gpios),
+              GPIO_DT_SPEC_GET(COL6_NODE, gpios),
+          },
+
+  };
+
+  // dla last clicked
+  rts_idx = 0;
+  memset(ready_to_send, 1, sizeof(ready_to_send));
+
+  while (1) {
+    scan_all(&mtx);
+    k_sleep(K_MSEC(MATRIX_FREQ));
+  }
+}
+
+static void detect_color_change() {}
+
+void process_click(struct pos *position) {
+#ifdef CONFIG_KEYBOARD_SIDE_LEFT
+  position->side = left;
+#else
+  position->side = right;
+#endif
+
+  if (position->x > XY_LIMIT)
+    return; // all set to 1 by default
+  if (hid_kpos == 0)
+    return;
+  while (k_msgq_put(&msgq_key, position, K_NO_WAIT) != RET_FINE) {
+    /* message queue is full: purge old data & try again */
+    k_msgq_purge(&msgq_key);
+  }
+}
+
+// returns pos in clicked by x and y.
+// used to regain modifiers
+struct pos return_pos(uint8_t x, uint8_t y) {
+  struct pos ans;
+  memset(&ans, 1, sizeof(ans));
+  for (int i = 0; i < HID_LIM; i++) {
+    if (keys_clicked[i].x == x && keys_clicked[i].y == y)
+      return keys_clicked[i];
+  }
+  return ans;
+}
+
+static void prepare_scan(void) {
+  memset(keys_clicked, 1, sizeof(keys_clicked));
+  hid_kpos = 0;
+
+  rts_idx = 0;
+  memset(ready_to_send, 1, sizeof(ready_to_send));
+}
+
+static void scan_matrix_rows(struct matrix *mtx) {
+  for (char i = 0; i < ROW_SIZE; i++) {
+    scan_row(mtx, i);
+  }
+}
+
+static void build_ready_to_send_list(void) {
+  struct pos position;
+
+  verify_clicked();
+
+  for (int i = 0; i < X_SIZE; i++) {
+    for (int j = 0; j < Y_SIZE; j++) {
+      if (debounce_table[i][j] > DEBOUNCE_CHECK) {
+        position = return_pos(i, j);
+
+        if (position.x >= XY_LIMIT)
+          continue;
+
+        ready_to_send[rts_idx] = position;
+
+        // ready_to_send[rts_idx].state = pressed;
+        // print_pos(&ready_to_send[rts_idx]);
+        rts_idx++;
+      }
+    }
+  }
+}
+
+static void process_ready_positions(void) {
+  detect_color_change();
+
+  for (int i = 0; i < rts_idx; i++) {
+    process_click(&ready_to_send[i]);
+  }
+}
+
+void scan_all(struct matrix *mtx) {
+  prepare_scan();
+
+  scan_matrix_rows(mtx);
+
+  build_ready_to_send_list();
+
+  process_ready_positions();
+}
+
+static uint8_t set_modifiers(uint8_t x, uint8_t y) {
+  uint8_t modifiers = MOD_CLEAR;
+  if (x == l_ctrl.x && y == l_ctrl.y) {
+    modifiers |= MOD_L_CTRL;
+  } else if (x == l_shift.x && y == l_shift.y) {
+    modifiers |= MOD_L_SHIFT;
+  } else if (x == l_alt.x && y == l_alt.y) {
+    modifiers |= MOD_L_ALT;
+  } else if (x == l_super.x && y == l_super.y) {
+    modifiers |= MOD_L_SUP;
+  } else if (x == r_alt.x && y == r_alt.y) {
+    modifiers |= MOD_R_ALT;
+  }
+  return modifiers;
+}
+
+void scan_row(struct matrix *mtx, int num) {
+  int clicked;
+
+  gpio_pin_set_dt(&(mtx->rows[num]), 1);
+
+  for (int i = 0; i < COL_SIZE; i++) {
+    clicked = gpio_pin_get_dt(&(mtx->cols[i]));
+
+    if (clicked == 1) {
+      // to avoid overflow
+      if (debounce_table[num][i] < DEBOUNCE_CHECK)
+        debounce_table[num][i]++;
+      keys_clicked[hid_kpos].x = num;
+      keys_clicked[hid_kpos].y = i;
+      keys_clicked[hid_kpos].modifier = set_modifiers(num, i);
+      hid_kpos++;
+    }
+  }
+  gpio_pin_set_dt(&(mtx->rows[num]), 0);
+}
+
+
+
+============================================================
+PLIK: ./matrix/matrix.h
+============================================================
+
+#ifndef MATRIX_H
+#define MATRIX_H
+
+#include "../bus/bus.h"
+#include <inttypes.h>
+#include <stdint.h>
+#include <zephyr/drivers/gpio.h>
+#include <zephyr/kernel.h>
+#include <zephyr/logging/log.h>
+#include <zephyr/sys/printk.h>
+
+#define ROW1_NODE DT_ALIAS(row1)
+#define ROW2_NODE DT_ALIAS(row2)
+#define ROW3_NODE DT_ALIAS(row3)
+#define ROW4_NODE DT_ALIAS(row4)
+#define ROW5_NODE DT_ALIAS(row5)
+
+#define COL1_NODE DT_ALIAS(col1)
+#define COL2_NODE DT_ALIAS(col2)
+#define COL3_NODE DT_ALIAS(col3)
+#define COL4_NODE DT_ALIAS(col4)
+#define COL5_NODE DT_ALIAS(col5)
+#define COL6_NODE DT_ALIAS(col6)
+
+#define X_SIZE COL_SIZE
+#define Y_SIZE ROW_SIZE
+
+// gpio defs
+extern const struct gpio_dt_spec row1;
+extern const struct gpio_dt_spec row2;
+extern const struct gpio_dt_spec row3;
+extern const struct gpio_dt_spec row4;
+extern const struct gpio_dt_spec row5;
+
+extern const struct gpio_dt_spec col1;
+extern const struct gpio_dt_spec col2;
+extern const struct gpio_dt_spec col3;
+extern const struct gpio_dt_spec col4;
+extern const struct gpio_dt_spec col5;
+extern const struct gpio_dt_spec col6;
+
+extern int values_table[Y_SIZE][X_SIZE];
+
+struct matrix {
+  struct gpio_dt_spec rows[ROW_SIZE];
+  struct gpio_dt_spec cols[COL_SIZE];
+};
+
+// handlers
+void scan_all(struct matrix *mtx);
+
+void keyboard_task(void *p1, void *p2, void *p3);
+
+void scan_row(struct matrix *mtx, int num);
+
+void process_click(struct pos *position);
+#endif
+
+
+
+============================================================
+PLIK: ./usb_ble_event/usb_ble_event.c
+============================================================
+
+#include "usb_ble_event.h"
+
+K_EVENT_DEFINE(usb_state_event);
+K_EVENT_DEFINE(ble_state_event);
+
+void usb_ready_changed(bool ready) {
+  usb_ready = ready;
+  uint32_t bit = ready ? USB_READY_BIT : USB_UNREADY_BIT;
+  k_event_post(&ble_state_event, bit);
+  k_event_post(&usb_state_event, bit);
+}
+
+
+
+============================================================
+PLIK: ./usb_ble_event/usb_ble_event.h
+============================================================
+
+#ifndef USB_BLE_EVENT
+#define USB_BLE_EVENT
+
+#include "../bus/bus.h"
+#include <stdbool.h>
+
+#define USB_READY_BIT BIT(0)
+#define USB_UNREADY_BIT BIT(1)
+
+extern struct k_event ble_state_event;
+extern struct k_event usb_state_event;
+
+void usb_ready_changed(bool ready);
+
+#endif
+
+
+
+============================================================
+PLIK: ./ble/ble_hid.h
+============================================================
+
+#ifndef BLE_HID_H
+#define BLE_HID_H
+
+#include "../bus/bus.h"
+#include "../usb_ble_event/usb_ble_event.h"
+#include "hog.h"
+#include <errno.h>
+#include <stddef.h>
+#include <string.h>
+#include <zephyr/bluetooth/bluetooth.h>
+#include <zephyr/bluetooth/conn.h>
+#include <zephyr/bluetooth/gatt.h>
+#include <zephyr/bluetooth/hci.h>
+#include <zephyr/bluetooth/uuid.h>
+#include <zephyr/kernel.h>
+#include <zephyr/settings/settings.h>
+#include <zephyr/sys/byteorder.h>
+#include <zephyr/sys/printk.h>
+#include <zephyr/types.h>
+
+void ble_pc_task(void *p1, void *p2, void *p3);
+void usb_ready_changed(bool ready);
+
+#endif
+
+
+
+============================================================
+PLIK: ./ble/hog.h
+============================================================
+
+#ifndef HOG_H
+#define HOG_H
+
+#include "../bus/bus.h"
+#include <errno.h>
+#include <stddef.h>
+#include <string.h>
+#include <zephyr/bluetooth/bluetooth.h>
+#include <zephyr/bluetooth/conn.h>
+#include <zephyr/bluetooth/gatt.h>
+#include <zephyr/bluetooth/hci.h>
+#include <zephyr/bluetooth/uuid.h>
+#include <zephyr/drivers/gpio.h>
+#include <zephyr/kernel.h>
+#include <zephyr/sys/byteorder.h>
+#include <zephyr/sys/printk.h>
+#include <zephyr/types.h>
+
+void hog_init(void);
+void send_report(void);
+
+#endif
+
+
+
+============================================================
+PLIK: ./ble/hog.c
+============================================================
+
+#include "hog.h"
+
+#define SERVICE_REPORT_IDX 5
+
+enum {
+  HIDS_REMOTE_WAKE = BIT(0),
+  HIDS_NORMALLY_CONNECTABLE = BIT(1),
+};
+
+struct hids_info {
+  uint16_t version; /* version number of base USB HID Specification */
+  uint8_t code;     /* country HID Device hardware is localized for. */
+  uint8_t flags;
+} __packed;
+
+struct hids_report {
+  uint8_t id;   /* report id */
+  uint8_t type; /* report type */
+} __packed;
+
+static struct hids_info info = {
+    .version = 0x0000,
+    .code = 0x00,
+    .flags = HIDS_NORMALLY_CONNECTABLE,
+};
+
+enum {
+  HIDS_INPUT = 0x01,
+  HIDS_OUTPUT = 0x02,
+  HIDS_FEATURE = 0x03,
+};
+
+static struct hids_report input = {
+    .id = 0x01,
+    .type = HIDS_INPUT,
+};
+
+static uint8_t notify_ready = 0;
+static uint8_t ctrl_point;
+
+static const uint8_t report_map[] = {0x05, 0x01, // Usage Page (Generic Desktop)
+                                     0x09, 0x06, // Usage (Keyboard)
+                                     0xA1, 0x01, // Collection (Application)
+
+                                     0x85, 0x01, // Report ID = 1
+
+                                     /* ===== MODIFIERS ===== */
+
+                                     0x05, 0x07, // Usage Page (Keyboard/Keypad)
+                                     0x19, 0xE0, // Usage Minimum (Left Control)
+                                     0x29, 0xE7, // Usage Maximum (Right GUI)
+
+                                     0x15, 0x00, // Logical Minimum (0)
+                                     0x25, 0x01, // Logical Maximum (1)
+
+                                     0x75, 0x01, // Report Size (1 bit)
+                                     0x95, 0x08, // Report Count (8)
+
+                                     0x81, 0x02, // Input (Data,Var,Abs)
+
+                                     /* ===== RESERVED BYTE ===== */
+
+                                     0x75, 0x08, // Report Size (8)
+                                     0x95, 0x01, // Report Count (1)
+
+                                     0x81, 0x03, // Input (Constant)
+
+                                     /* ===== LEDS ===== */
+
+                                     0x05, 0x08, // Usage Page (LEDs)
+
+                                     0x19, 0x01, // Num Lock
+                                     0x29, 0x05, // Kana
+
+                                     0x75, 0x01, // 1 bit
+                                     0x95, 0x05, // 5 LEDów
+
+                                     0x91, 0x02, // Output (Data,Var,Abs)
+
+                                     /* padding */
+
+                                     0x75, 0x03, 0x95, 0x01, 0x91, 0x03,
+
+                                     /* ===== KEY ARRAY ===== */
+
+                                     0x05, 0x07, // Keyboard page
+
+                                     0x19, 0x00, 0x29, 0x65,
+
+                                     0x15, 0x00, 0x25, 0x65,
+
+                                     0x75, 0x08, // 8 bitów
+                                     0x95, 0x06, // 6 klawiszy
+
+                                     0x81, 0x00, // Input (Data,Array)
+
+                                     0xC0};
+
+static uint8_t protocol_mode = 0x01;
+
+static ssize_t read_protocol_mode(struct bt_conn *conn,
+                                  const struct bt_gatt_attr *attr, void *buf,
+                                  uint16_t len, uint16_t offset) {
+  return bt_gatt_attr_read(conn, attr, buf, len, offset, attr->user_data,
+                           sizeof(protocol_mode));
+}
+
+static ssize_t write_protocol_mode(struct bt_conn *conn,
+                                   const struct bt_gatt_attr *attr,
+                                   const void *buf, uint16_t len,
+                                   uint16_t offset, uint8_t flags) {
+  if (offset != 0) {
+    return BT_GATT_ERR(BT_ATT_ERR_INVALID_OFFSET);
+  }
+
+  if (len != 1) {
+    return BT_GATT_ERR(BT_ATT_ERR_INVALID_ATTRIBUTE_LEN);
+  }
+
+  uint8_t mode = *(uint8_t *)buf;
+
+  if (mode != 0x00 && mode != 0x01) { // dodaj makro
+    return BT_GATT_ERR(BT_ATT_ERR_VALUE_NOT_ALLOWED);
+  }
+
+  protocol_mode = mode;
+
+  return len;
+}
+
+static ssize_t read_info(struct bt_conn *conn, const struct bt_gatt_attr *attr,
+                         void *buf, uint16_t len, uint16_t offset) {
+  return bt_gatt_attr_read(conn, attr, buf, len, offset, attr->user_data,
+                           sizeof(struct hids_info));
+}
+
+static ssize_t read_report_map(struct bt_conn *conn,
+                               const struct bt_gatt_attr *attr, void *buf,
+                               uint16_t len, uint16_t offset) {
+  printk("Reading report map, size: %zu\n", sizeof(report_map));
+  return bt_gatt_attr_read(conn, attr, buf, len, offset, report_map,
+                           sizeof(report_map));
+}
+
+static ssize_t read_report(struct bt_conn *conn,
+                           const struct bt_gatt_attr *attr, void *buf,
+                           uint16_t len, uint16_t offset) {
+  return bt_gatt_attr_read(conn, attr, buf, len, offset, attr->user_data,
+                           sizeof(struct hids_report));
+}
+
+static void input_ccc_changed(const struct bt_gatt_attr *attr, uint16_t value) {
+  notify_ready = (value == BT_GATT_CCC_NOTIFY) ? 1 : 0;
+}
+
+static ssize_t read_input_report(struct bt_conn *conn,
+                                 const struct bt_gatt_attr *attr, void *buf,
+                                 uint16_t len, uint16_t offset) {
+  printk("Reading input report from attr: %p\n", attr);
+  return bt_gatt_attr_read(conn, attr, buf, len, offset, NULL, 0);
+}
+
+static ssize_t write_ctrl_point(struct bt_conn *conn,
+                                const struct bt_gatt_attr *attr,
+                                const void *buf, uint16_t len, uint16_t offset,
+                                uint8_t flags) {
+  uint8_t *value = attr->user_data;
+
+  if (offset + len > sizeof(ctrl_point)) {
+    return BT_GATT_ERR(BT_ATT_ERR_INVALID_OFFSET);
+  }
+
+  memcpy(value + offset, buf, len);
+
+  return len;
+}
+
+#if CONFIG_SAMPLE_BT_USE_AUTHENTICATION
+/* Require encryption using authenticated link-key. */
+#define SAMPLE_BT_PERM_READ BT_GATT_PERM_READ_AUTHEN
+#define SAMPLE_BT_PERM_WRITE BT_GATT_PERM_WRITE_AUTHEN
+#else
+/* Require encryption. */
+#define SAMPLE_BT_PERM_READ BT_GATT_PERM_READ_ENCRYPT
+#define SAMPLE_BT_PERM_WRITE BT_GATT_PERM_WRITE_ENCRYPT
+#endif
+
+BT_GATT_SERVICE_DEFINE(
+    hog_svc, BT_GATT_PRIMARY_SERVICE(BT_UUID_HIDS),
+    BT_GATT_CHARACTERISTIC(BT_UUID_HIDS_INFO, BT_GATT_CHRC_READ,
+                           BT_GATT_PERM_READ, read_info, NULL, &info),
+    BT_GATT_CHARACTERISTIC(BT_UUID_HIDS_REPORT_MAP, BT_GATT_CHRC_READ,
+                           BT_GATT_PERM_READ, read_report_map, NULL, NULL),
+    BT_GATT_CHARACTERISTIC(BT_UUID_HIDS_REPORT,
+                           BT_GATT_CHRC_READ | BT_GATT_CHRC_NOTIFY,
+                           SAMPLE_BT_PERM_READ, read_input_report, NULL, NULL),
+    BT_GATT_CCC(input_ccc_changed, SAMPLE_BT_PERM_READ | SAMPLE_BT_PERM_WRITE),
+    BT_GATT_DESCRIPTOR(BT_UUID_HIDS_REPORT_REF, BT_GATT_PERM_READ, read_report,
+                       NULL, &input),
+    BT_GATT_CHARACTERISTIC(BT_UUID_HIDS_CTRL_POINT,
+                           BT_GATT_CHRC_WRITE_WITHOUT_RESP, BT_GATT_PERM_WRITE,
+                           NULL, write_ctrl_point, &ctrl_point), );
+
+void hog_init(void) {}
+
+static bool debounce_flag = 0;
+
+void send_report() {
+  uint8_t report[KB_REPORT_COUNT];
+  memset(&report, 0, sizeof(report));
+  k_msgq_get(&msgq_kb_report, report, K_NO_WAIT);
+
+  if (!notify_ready)
+    return;
+
+  if (debounce_flag == 0 && report[KB_KEY_CODE1] == 0)
+    debounce_flag = 1;
+  else
+    debounce_flag = 0;
+
+  if (!debounce_flag) {
+    // printk("report: ");
+    // for (int i = 0; i < 8; i++)
+    //   printk("%d ", report[i]);
+    // printk("\n");
+    bt_gatt_notify(NULL, &hog_svc.attrs[SERVICE_REPORT_IDX], report,
+                   sizeof(report));
+  }
+}
+
+
+
+============================================================
+PLIK: ./ble/ble_client.c
+============================================================
+
+#include "ble_client.h"
+#include "ble_matrix_input.h"
+
+#define MAX_KEYS 6
+#define KEY_LIST_START 2
+
+static struct bt_uuid_128 service_uuid =
+    BT_UUID_INIT_128(0xf0, 0xde, 0xbc, 0x9a, 0x78, 0x56, 0x34, 0x12, 0x34, 0x12,
+                     0x78, 0x56, 0x34, 0x12, 0x00, 0x01);
+
+static struct bt_uuid_128 char_uuid =
+    BT_UUID_INIT_128(0xf1, 0xde, 0xbc, 0x9a, 0x78, 0x56, 0x34, 0x12, 0x34, 0x12,
+                     0x78, 0x56, 0x34, 0x12, 0x00, 0x01);
+
+static struct bt_conn *default_conn;
+static struct bt_gatt_subscribe_params subscribe_params;
+
+static struct bt_gatt_discover_params discover_params;
+static uint16_t value_handle;
+static uint16_t ccc_handle;
+
+static struct key_code tx_value_master;
+struct pos button;
+
+static void enqueue_key_codes(struct key_code *key_vals, size_t size_to_push) {
+  for (size_t i = 0; i < size_to_push; i++) {
+    while (k_msgq_put(&msgq_key_codes, &key_vals[i], K_NO_WAIT) != RET_FINE) {
+
+      /* message queue is full: purge old data & try again */
+      k_msgq_purge(&msgq_key_codes);
+    }
+  }
+}
+
+static void enqueue_keyboard_report(void) {
+  uint8_t report[KB_REPORT_COUNT];
+
+  memset(report, 0, sizeof(report));
+
+  create_report(report);
+
+  // printk("report: ");
+  // for (int i = 0; i < KB_REPORT_COUNT; i++)
+  //   printk("%d ", report[i]);
+  // printk("\n");
+
+  if (report[KEY_LIST_START] != 0) {
+    while (k_msgq_put(&msgq_kb_report, report, K_NO_WAIT) != 0) {
+
+      /* message queue is full: purge old data & try again */
+      k_msgq_purge(&msgq_kb_report);
+    }
+  }
+}
+
+static void process_master_cycle(void) {
+  struct key_code key_vals[HID_LIM];
+
+  size_t size_to_push = get_all_queue_l(key_vals);
+
+  enqueue_key_codes(key_vals, size_to_push);
+
+  enqueue_keyboard_report();
+}
+
+void ble_task_master(void *p1, void *p2, void *p3) {
+  ble_setup_master();
+
+  while (1) {
+    process_master_cycle();
+
+    k_sleep(K_MSEC(pc_interval));
+  }
+}
+
+static uint8_t notify_func(struct bt_conn *conn,
+                           struct bt_gatt_subscribe_params *params,
+                           const void *data, uint16_t length) {
+  if (!data) {
+    printk("Subscription terminated\n");
+    return BT_GATT_ITER_STOP;
+  }
+
+  if (length >= 1) {
+    tx_value_master = *((struct key_code *)data);
+  }
+  while (k_msgq_put(&msgq_key_codes, &tx_value_master, K_NO_WAIT) != 0) {
+    /* message queue is full: purge old data & try again */
+    k_msgq_purge(&msgq_key_codes);
+  }
+
+  memset(&tx_value_master, 0, sizeof(tx_value_master));
+
+  return BT_GATT_ITER_CONTINUE;
+}
+
+static void subscribe_to_characteristic(void) {
+  int err;
+
+  subscribe_params.notify = notify_func;
+  subscribe_params.value = BT_GATT_CCC_NOTIFY;
+  subscribe_params.value_handle = value_handle;
+  subscribe_params.ccc_handle = ccc_handle;
+
+  err = bt_gatt_subscribe(default_conn, &subscribe_params);
+  if (err) {
+    printk("Subscribe failed (%d)\n", err);
+  }
+}
+static bool data_cb(struct bt_data *data, void *user_data) {
+  char *name = user_data;
+
+  switch (data->type) {
+
+  case BT_DATA_NAME_COMPLETE:
+  case BT_DATA_NAME_SHORTENED:
+
+    memcpy(name, data->data, data->data_len);
+    name[data->data_len] = 0;
+
+    return false;
+
+  default:
+    return true;
+  }
+}
+
+static void device_found(const bt_addr_le_t *addr, int8_t rssi, uint8_t type,
+                         struct net_buf_simple *ad) {
+  char name[32] = {0};
+
+  bt_data_parse(ad, data_cb, name);
+
+  if (strcmp(name, DEVICE_NAME) != 0) {
+    printk("NOT!!!! Found target: %s\n", name);
+
+    return;
+  }
+
+  // printk("!!!! Found target: %s\n", name);
+
+  bt_le_scan_stop();
+
+  int err = bt_conn_le_create(addr, BT_CONN_LE_CREATE_CONN,
+                              BT_LE_CONN_PARAM_DEFAULT, &default_conn);
+
+  if (err) {
+    printk("Create conn failed (%d)\n", err);
+    bt_le_scan_start(BT_LE_SCAN_ACTIVE, device_found);
+  }
+}
+
+int ble_setup_master() {
+  int err;
+  printk("BLE Central Start\n");
+
+  err = bt_enable(NULL);
+  if (err) {
+    printk("Bluetooth init failed (%d)\n", err);
+    return -1;
+  }
+  printk("Bluetooth ready\n");
+
+  settings_load();
+  k_sem_give(&ble_init_sem);
+
+  err = bt_le_scan_start(BT_LE_SCAN_ACTIVE, device_found);
+  if (err) {
+    printk("Scan failed (%d)\n", err);
+    return -1;
+  }
+
+  // printk("Scanning...\n");
+  return 0;
+}
+
+static uint8_t discover_ccc_cb(struct bt_conn *conn,
+                               const struct bt_gatt_attr *attr,
+                               struct bt_gatt_discover_params *params) {
+  if (!attr) {
+    printk("CCC not found\n");
+    memset(params, 0, sizeof(*params));
+    return BT_GATT_ITER_STOP;
+  }
+
+  ccc_handle = attr->handle;
+
+  // printk("CCC handle = 0x%04x\n", ccc_handle);
+
+  memset(params, 0, sizeof(*params));
+
+  subscribe_to_characteristic();
+
+  return BT_GATT_ITER_STOP;
+}
+
+static bool le_param_req(struct bt_conn *conn, struct bt_le_conn_param *param) {
+  printk("Requested interval %d-%d latency %d timeout %d\n",
+         param->interval_min, param->interval_max, param->latency,
+         param->timeout);
+
+  return true; // accept everything
+}
+
+static uint8_t discover_char_cb(struct bt_conn *conn,
+                                const struct bt_gatt_attr *attr,
+                                struct bt_gatt_discover_params *params) {
+  if (!attr) {
+    printk("Characteristic not found\n");
+    memset(params, 0, sizeof(*params));
+    return BT_GATT_ITER_STOP;
+  }
+
+  const struct bt_gatt_chrc *chrc = attr->user_data;
+
+  value_handle = chrc->value_handle;
+
+  // printk("Value handle = 0x%04x\n", value_handle);
+
+  discover_params.uuid = BT_UUID_GATT_CCC;
+  discover_params.start_handle = value_handle + 1;
+  discover_params.end_handle = 0xffff;
+  discover_params.type = BT_GATT_DISCOVER_DESCRIPTOR;
+  discover_params.func = discover_ccc_cb;
+
+  int err = bt_gatt_discover(conn, &discover_params);
+
+  if (err) {
+    printk("CCC discover failed (%d)\n", err);
+  }
+
+  return BT_GATT_ITER_STOP;
+}
+
+static void connected(struct bt_conn *conn, uint8_t err) {
+  struct bt_conn_info info;
+  if (bt_conn_get_info(conn, &info) == 0 && info.role != BT_CONN_ROLE_CENTRAL) {
+    return; /* to polaczenie peryferyjne do PC, nie nasze */
+  }
+
+  if (err) {
+    printk("Connection failed (%u)\n", err);
+    return;
+  }
+
+  // printk("Connected\n");
+
+  if (default_conn == NULL)
+    default_conn = bt_conn_ref(conn);
+
+  discover_params.uuid = &char_uuid.uuid;
+  discover_params.start_handle = BT_ATT_FIRST_ATTRIBUTE_HANDLE;
+  discover_params.end_handle = BT_ATT_LAST_ATTRIBUTE_HANDLE;
+  discover_params.type = BT_GATT_DISCOVER_CHARACTERISTIC;
+  discover_params.func = discover_char_cb;
+
+  err = bt_gatt_discover(conn, &discover_params);
+
+  if (err) {
+    printk("Discover failed (%d)\n", err);
+  }
+}
+
+static void disconnected(struct bt_conn *conn, uint8_t reason) {
+  if (conn != default_conn) {
+    return; /* nie nasze polaczenie */
+  }
+  printk("Disconnected reason=%u\n", reason);
+
+  if (default_conn) {
+    bt_conn_unref(default_conn);
+    default_conn = NULL;
+  }
+  bt_le_scan_start(BT_LE_SCAN_ACTIVE, device_found);
+}
+
+BT_CONN_CB_DEFINE(conn_callbacks) = {.connected = connected,
+                                     .disconnected = disconnected,
+                                     .le_param_req = le_param_req};
+
+
+
+============================================================
+PLIK: ./ble/ble_peripheral.c
+============================================================
+
+#include "ble_peripheral.h"
+#include "ble_matrix_input.h"
+
+#define GATT_SERVICE_ID 2
+
+#define MIN_INTERVAL_REQ 10 //
+#define MAX_INTERVAL_REQ 10 //
+#define LATENCY_BLE 0
+#define TIMEOUT_BLE 400 // 4s
+
+#define RECONNECT_DELAY 1
+
+static struct key_code tx_value_slave;
+static uint16_t interval_ms;
+static struct bt_conn *current_conn;
+
+static struct bt_uuid_128 service_uuid =
+    BT_UUID_INIT_128(0xf0, 0xde, 0xbc, 0x9a, 0x78, 0x56, 0x34, 0x12, 0x34, 0x12,
+                     0x78, 0x56, 0x34, 0x12, 0x00, 0x01);
+
+static struct bt_uuid_128 char_uuid =
+    BT_UUID_INIT_128(0xf1, 0xde, 0xbc, 0x9a, 0x78, 0x56, 0x34, 0x12, 0x34, 0x12,
+                     0x78, 0x56, 0x34, 0x12, 0x00, 0x01);
+
+static ssize_t read_value(struct bt_conn *conn, const struct bt_gatt_attr *attr,
+                          void *buf, uint16_t len, uint16_t offset) {
+  return bt_gatt_attr_read(conn, attr, buf, len, offset, &tx_value_slave,
+                           sizeof(tx_value_slave));
+}
+
+static void ccc_cfg_changed(const struct bt_gatt_attr *attr, uint16_t value) {
+  ARG_UNUSED(attr);
+  printk("CCCD changed: %u\n", value);
+}
+
+BT_GATT_SERVICE_DEFINE(
+    my_service, BT_GATT_PRIMARY_SERVICE(&service_uuid),
+
+    BT_GATT_CHARACTERISTIC(&char_uuid.uuid,
+                           BT_GATT_CHRC_READ | BT_GATT_CHRC_NOTIFY,
+                           BT_GATT_PERM_READ, read_value, NULL,
+                           &tx_value_slave),
+
+    BT_GATT_CCC(ccc_cfg_changed, BT_GATT_PERM_READ | BT_GATT_PERM_WRITE));
+
+static const struct bt_data ad[] = {
+    BT_DATA_BYTES(BT_DATA_FLAGS, (BT_LE_AD_GENERAL | BT_LE_AD_NO_BREDR)),
+    BT_DATA(BT_DATA_NAME_COMPLETE, CONFIG_BT_DEVICE_NAME,
+            sizeof(CONFIG_BT_DEVICE_NAME) - 1),
+};
+
+static struct bt_conn *default_conn;
+
+static void connected(struct bt_conn *conn, uint8_t err) {
+  if (err) {
+    printk("Connection failed (err %u)\n", err);
+    return;
+  }
+  bt_le_adv_stop();
+  printk("Connected\n");
+  default_conn = bt_conn_ref(conn);
+  printk("conn=%p\n", conn);
+  current_conn = bt_conn_ref(conn);
+
+  bt_conn_le_param_update(conn,
+                          BT_LE_CONN_PARAM(MIN_INTERVAL_REQ, MAX_INTERVAL_REQ,
+                                           LATENCY_BLE, TIMEOUT_BLE));
+}
+
+static void ble_adv() {
+  int8_t err =
+      bt_le_adv_start(BT_LE_ADV_CONN_FAST_2, ad, ARRAY_SIZE(ad), NULL, 0);
+
+  if (err) {
+    printk("Advertising error\n");
+    return;
+  }
+  struct bt_conn_info info;
+
+  if (bt_conn_get_info(current_conn, &info) == RET_FINE) {
+    if (info.type == BT_CONN_TYPE_LE) {
+      interval_ms = info.le.interval;
+    }
+  }
+}
+
+static void disconnected(struct bt_conn *conn, uint8_t reason) {
+
+  printk("Disconnected (reason %u)\n", reason);
+  if (current_conn) {
+    bt_conn_unref(current_conn);
+    current_conn = NULL;
+  }
+  if (reason != BT_HCI_ERR_REMOTE_USER_TERM_CONN) {
+    // delay to prevent instant reconnect
+    // k_sleep(K_SECONDS(RECONNECT_DELAY));
+    ble_adv();
+  }
+}
+
+static void le_param_updated(struct bt_conn *conn, uint16_t interval,
+                             uint16_t latency, uint16_t timeout) {
+  interval_ms = interval * INTERVAL_MUL;
+}
+
+BT_CONN_CB_DEFINE(conn_callbacks) = {.connected = connected,
+                                     .disconnected = disconnected,
+                                     .le_param_updated = le_param_updated};
+
+int ble_setup_slave() {
+  int err;
+  // pos_reset(&tx_value_slave);
+
+  memset(&tx_value_slave, 0, sizeof(tx_value_slave));
+
+  err = bt_enable(NULL);
+  if (err) {
+    printk("BLE init error\n");
+    return -1;
+  }
+
+  printk("BLE ready\n");
+  ble_adv();
+
+  return 0;
+}
+
+void ble_task_slave(void *p1, void *p2, void *p3) {
+  ble_setup_slave();
+  const struct bt_gatt_attr *attr = &my_service.attrs[GATT_SERVICE_ID];
+
+  while (1) {
+    if (default_conn == NULL ||
+        !bt_gatt_is_subscribed(default_conn, attr, BT_GATT_CCC_NOTIFY)) {
+      k_sleep(K_MSEC(50));
+      continue;
+    }
+
+    size_t size_to_push;
+    struct key_code key_vals[HID_LIM];
+    size_to_push = get_all_queue_l(key_vals);
+    for (size_t i = 0; i < size_to_push; i++) {
+      bt_gatt_notify(default_conn, attr, &key_vals[i], sizeof(key_vals[i]));
+    }
+
+    k_sleep(K_MSEC(interval_ms));
+  }
+}
+
+
+
+============================================================
+PLIK: ./ble/ble_matrix_input.c
+============================================================
+
+#include "ble_matrix_input.h"
+
+#define MAX_KEYS HID_LIM
+#define KEY_LIST_START 2
+
+static uint8_t get_key_value(struct pos button) {
+  if (button.side == left)
+    return values_table_l[button.x][button.y];
+  else if (button.side == right)
+    return values_table_r[button.x][button.y];
+
+  return 0;
+}
+
+static void collect_pressed_keys(Set *set, uint8_t *modifier) {
+  int8_t ret;
+  uint8_t key_val = 1;
+  struct pos button;
+
+  while (key_val != 0) {
+    ret = k_msgq_get(&msgq_key, &button, K_NO_WAIT);
+
+    if (button.x > XY_LIMIT)
+      continue;
+
+    if (ret != RET_FINE)
+      break;
+
+    // printk("%d %d", button.x, button.y);
+
+    key_val = get_key_value(button);
+
+    *modifier |= button.modifier;
+
+    if (!contains_set(set, key_val)) {
+      insert_set(set, key_val);
+    }
+  }
+}
+
+static size_t copy_keys_from_set(Set *set, struct key_code *keys,
+                                 uint8_t modifier) {
+  int values[SET_MAX];
+
+  size_t n = set_get_values(set, values);
+
+  if (n > HID_LIM) {
+    n = HID_LIM;
+  }
+
+  for (size_t i = 0; i < n; i++) {
+    struct key_code key = {
+        .value = values[i],
+        .modifier = modifier,
+    };
+
+    keys[i] = key;
+  }
+
+  return n;
+}
+
+size_t get_all_queue_l(struct key_code *keys) {
+  Set set_obj;
+  Set *set = &set_obj;
+
+  uint8_t modifier = 0;
+
+  clear_set(set);
+
+  collect_pressed_keys(set, &modifier);
+
+  return copy_keys_from_set(set, keys, modifier);
+}
+
+void create_report(uint8_t report[KB_REPORT_COUNT]) {
+  memset(report, 0, sizeof(report[0] * KB_REPORT_COUNT));
+
+  Set clicked;
+  clear_set(&clicked);
+
+  uint8_t ret;
+  uint8_t i = 0;
+  struct key_code button;
+
+  while (i < KB_REPORT_COUNT - KB_KEY_CODE1) {
+    ret = k_msgq_get(&msgq_key_codes, &button, K_NO_WAIT);
+    if (ret != RET_FINE)
+      break;
+
+    if (!contains_set(&clicked, button.value)) {
+      insert_set(&clicked, button.value);
+      report[KB_MOD_KEY] |= button.modifier;
+      report[KB_KEY_CODE1 + i] = button.value;
+      i++;
+    }
+
+    memset(&button, 0, sizeof(button));
+    // pos_reset(&tx_value_master);
+  }
+  report[KB_RESERVED] = 0;
+}
+
+
+
+============================================================
+PLIK: ./ble/ble_matrix_input.h
+============================================================
+
+#ifndef BLE_MATRIX_INPUT_H
+#define BLE_MATRIX_INPUT_H
+
+#include "../bus/bus.h"
+#include <hal/nrf_power.h>
+#include <zephyr/drivers/gpio.h>
+#include <zephyr/drivers/led_strip.h>
+#include <zephyr/kernel.h>
+#include <zephyr/sys/printk.h>
+
+#include "../data_structures/bitset.h"
+#include <string.h>
+
+void create_report(uint8_t report[KB_REPORT_COUNT]);
+size_t get_all_queue_l(struct key_code *keys);
+#endif
+
+
+
+============================================================
+PLIK: ./ble/ble_hid.c
+============================================================
+
+#include "ble_hid.h"
+
+#define MIN_INTERVAL_REQ 12 // 15 ms
+#define MAX_INTERVAL_REQ 12 // 15 ms
+#define LATENCY_BLE 0
+#define TIMEOUT_BLE 400 // 4s
+
+#define BLE_DELAY 300
+#define BLE_INIT_DELAY 500
+#define RECONNECT_DELAY 1
+
+static bool ble_active = false;
+static struct bt_conn *current_conn;
+
+static void le_param_updated(struct bt_conn *conn, uint16_t interval,
+                             uint16_t latency, uint16_t timeout) {
+  pc_interval = interval * INTERVAL_MUL;
+}
+
+static const uint16_t appearance = CONFIG_BT_DEVICE_APPEARANCE;
+// static const struct bt_data ad[] = {
+//     BT_DATA_BYTES(BT_DATA_FLAGS, (BT_LE_AD_GENERAL | BT_LE_AD_NO_BREDR)),
+//     BT_DATA_BYTES(BT_DATA_UUID16_ALL, BT_UUID_16_ENCODE(BT_UUID_HIDS_VAL),
+//                   BT_UUID_16_ENCODE(BT_UUID_BAS_VAL)),
+//
+//     BT_DATA(BT_DATA_GAP_APPEARANCE, (const uint8_t *)&appearance,
+//             sizeof(appearance)),
+// };
+
+static const struct bt_data ad[] = {
+    BT_DATA_BYTES(BT_DATA_FLAGS, (BT_LE_AD_GENERAL | BT_LE_AD_NO_BREDR)),
+    BT_DATA_BYTES(BT_DATA_UUID16_ALL, BT_UUID_16_ENCODE(BT_UUID_HIDS_VAL),
+                  BT_UUID_16_ENCODE(BT_UUID_BAS_VAL)),
+};
+
+static const struct bt_data sd[] = {
+    BT_DATA(BT_DATA_NAME_COMPLETE, CONFIG_BT_DEVICE_NAME,
+            sizeof(CONFIG_BT_DEVICE_NAME) - 1),
+};
+
+static bool is_peripheral_connection(struct bt_conn *conn) {
+  struct bt_conn_info info;
+
+  if (bt_conn_get_info(conn, &info) == 0 &&
+      info.role != BT_CONN_ROLE_PERIPHERAL) {
+    return false; /* to polaczenie centralne do drugiej polowki, nie nasze */
+  }
+
+  return true;
+}
+
+static bool handle_connection_error(struct bt_conn *conn, uint8_t err) {
+  if (err) {
+    printk("Failed to connect to %s, err 0x%02x %s\n", bt_conn_dst_str(conn),
+           err, bt_hci_err_to_str(err));
+    return true;
+  }
+
+  return false;
+}
+
+// static void update_connection_interval(void) {
+//   struct bt_conn_info info;
+//
+//   k_sleep(K_MSEC(100));
+//
+//   if (bt_conn_get_info(current_conn, &info) == RET_FINE) {
+//     if (info.type == BT_CONN_TYPE_LE) {
+//       pc_interval = info.le.interval;
+//     }
+//   }
+// }
+
+static void configure_connection(struct bt_conn *conn) {
+  printk("Connected %s\n", bt_conn_dst_str(conn));
+
+  current_conn = bt_conn_ref(conn);
+
+  bt_conn_le_param_update(
+      conn,
+      BT_LE_CONN_PARAM(MIN_INTERVAL_REQ, // min 7.5ms
+                       MAX_INTERVAL_REQ, // max interval = 15 ms
+                       LATENCY_BLE,      // latency
+                       TIMEOUT_BLE       // timeout = 4 s
+                       ));
+
+  // update_connection_interval();
+}
+
+static void connected(struct bt_conn *conn, uint8_t err) {
+  // if (!is_peripheral_connection(conn)) {
+  //   return;
+  // }
+
+  if (handle_connection_error(conn, err)) {
+    return;
+  }
+
+  configure_connection(conn);
+}
+
+static void disconnected(struct bt_conn *conn, uint8_t reason) {
+  if (conn != current_conn) {
+    return;
+  }
+
+  printk("Disconnected from %s, reason 0x%02x %s\n", bt_conn_dst_str(conn),
+         reason, bt_hci_err_to_str(reason));
+
+  bt_conn_unref(current_conn);
+  current_conn = NULL;
+
+  if (ble_active && reason != BT_HCI_ERR_REMOTE_USER_TERM_CONN) {
+    k_sleep(K_SECONDS(RECONNECT_DELAY));
+    bt_le_adv_start(BT_LE_ADV_CONN_FAST_2, ad, ARRAY_SIZE(ad), sd,
+                    ARRAY_SIZE(sd));
+  }
+}
+
+static void security_changed(struct bt_conn *conn, bt_security_t level,
+                             enum bt_security_err err) {
+  if (!err) {
+    printk("Security changed: %s level %u\n", bt_conn_dst_str(conn), level);
+  } else {
+    printk("Security failed: %s level %u err %s(%d)\n", bt_conn_dst_str(conn),
+           level, bt_security_err_to_str(err), err);
+  }
+}
+
+BT_CONN_CB_DEFINE(conn_callbacks) = {.connected = connected,
+                                     .disconnected = disconnected,
+                                     .security_changed = security_changed,
+                                     .le_param_updated = le_param_updated};
+
+static void auth_confirm(struct bt_conn *conn, unsigned int passkey) {
+  printk("Pairing confirmed\n");
+  bt_conn_auth_passkey_confirm(conn);
+}
+
+static void auth_passkey_display(struct bt_conn *conn, unsigned int passkey) {
+  bt_conn_auth_passkey_confirm(conn);
+
+  printk("Passkey for %s: %06u\n", bt_conn_dst_str(conn), passkey);
+}
+
+static void auth_cancel(struct bt_conn *conn) {
+  printk("Pairing cancelled: %s\n", bt_conn_dst_str(conn));
+}
+
+static struct bt_conn_auth_cb auth_cb_display = {
+    .passkey_confirm = auth_confirm,
+    .passkey_display = auth_passkey_display,
+    .passkey_entry = NULL,
+    .cancel = auth_cancel,
+};
+
+static void ble_stop(void) {
+  int err = bt_le_adv_stop();
+  if (err) {
+    printk("Advertising stop failed (err %d)\n", err);
+  } else {
+    printk("Advertising stopped\n");
+  }
+
+  if (current_conn) {
+    err = bt_conn_disconnect(current_conn, BT_HCI_ERR_REMOTE_USER_TERM_CONN);
+    if (err) {
+      printk("Disconnect failed (err %d)\n", err);
+    }
+  }
+}
+
+static void ble_start(void) {
+  int err = bt_le_adv_start(BT_LE_ADV_CONN_FAST_2, ad, ARRAY_SIZE(ad), sd,
+                            ARRAY_SIZE(sd));
+  if (err) {
+    printk("Advertising failed to start (err %d)\n", err);
+    return;
+  }
+  printk("Advertising successfully started\n");
+}
+
+static void initialize_ble_pc(void) {
+  k_sem_take(&ble_init_sem, K_FOREVER);
+  k_sleep(K_MSEC(BLE_INIT_DELAY));
+
+  if (IS_ENABLED(CONFIG_SAMPLE_BT_USE_AUTHENTICATION)) {
+    bt_conn_auth_cb_register(&auth_cb_display);
+    int err = bt_passkey_set(123456);
+    if (err) {
+      printk("Failed to set fixed passkey (%d)\n", err);
+    }
+    printk("Bluetooth authentication callbacks registered.\n");
+  }
+
+  if (!usb_ready) {
+    ble_start();
+    ble_active = true;
+  }
+}
+
+static void handle_ble_state_events(uint32_t events) {
+  if (events & USB_READY_BIT) {
+    if (ble_active) {
+      ble_active = false;
+      ble_stop();
+    }
+  } else if (events & USB_UNREADY_BIT) {
+    if (!ble_active) {
+      ble_active = true;
+      ble_start();
+    }
+  }
+}
+
+void ble_pc_task(void *p1, void *p2, void *p3) {
+  initialize_ble_pc();
+
+  while (1) {
+    uint32_t events =
+        k_event_wait(&ble_state_event, USB_READY_BIT | USB_UNREADY_BIT, true,
+                     ble_active ? K_MSEC(pc_interval) : K_FOREVER);
+
+    handle_ble_state_events(events);
+
+    if (ble_active) {
+      send_report();
+    }
+  }
+}
+
+
+
+============================================================
+PLIK: ./ble/ble_client.h
+============================================================
+
+#ifndef BLE_CLIENT_H
+#define BLE_CLIENT_H
+
+#include "../bus/bus.h"
+#include <hal/nrf_power.h>
+#include <zephyr/bluetooth/bluetooth.h>
+#include <zephyr/bluetooth/conn.h>
+#include <zephyr/bluetooth/gatt.h>
+#include <zephyr/bluetooth/hci.h>
+#include <zephyr/bluetooth/uuid.h>
+#include <zephyr/kernel.h>
+#include <zephyr/logging/log.h>
+#include <zephyr/settings/settings.h>
+#include <zephyr/sys/byteorder.h>
+#include <zephyr/sys/printk.h>
+#include <zephyr/types.h>
+
+#define CLI_FREQ 30
+#define DEVICE_NAME "XIAO_BLE_R"
+
+void ble_task_master(void *p1, void *p2, void *p3);
+
+int ble_setup_master();
+
+#endif
+
+
+
+============================================================
+PLIK: ./ble/ble_peripheral.h
+============================================================
+
+#ifndef BLE_PER_H
+#define BLE_PER_H
+
+#include "../bus/bus.h"
+#include "../data_structures/bitset.h"
+#include "ble_matrix_input.h"
+#include <zephyr/bluetooth/bluetooth.h>
+#include <zephyr/bluetooth/conn.h>
+#include <zephyr/bluetooth/gatt.h>
+#include <zephyr/bluetooth/hci.h>
+
+int ble_setup_slave();
+void ble_task_slave(void *p1, void *p2, void *p3);
+
+#endif
+
+
+
+============================================================
+PLIK: ./init/init.c
+============================================================
+
+#include "init.h"
+
+static int validate_arr(struct gpio_dt_spec *arr, int len, char *name) {
+  for (int i = 0; i < len; i++) {
+    if (!gpio_is_ready_dt(&arr[i])) {
+      printk("%s%d GPIO not ready\n", name, i);
+      return GPIO_INIT_ERR;
+    }
+  }
+  return 0;
+}
+
+int init_validation(struct all_pins *pins) {
+  validate_arr(pins->leds, pins->led_num, "LED");
+
+  validate_arr(pins->cols, pins->col_num, "COL");
+
+  validate_arr(pins->rows, pins->row_num, "ROW");
+  return 0;
+}
+
+void init_configure(struct all_pins *pins) {
+  int i;
+
+  for (i = 0; i < pins->row_num; i++)
+    gpio_pin_configure_dt(&pins->rows[i], GPIO_OUTPUT_INACTIVE);
+
+  for (i = 0; i < pins->col_num; i++)
+    gpio_pin_configure_dt(&pins->cols[i], GPIO_INPUT | GPIO_PULL_UP);
+
+  // built-in leds and external led controller led_din
+  for (i = 0; i < pins->led_num; i++)
+    gpio_pin_configure_dt(&pins->leds[i], GPIO_OUTPUT_ACTIVE);
+}
+
+
+
+============================================================
+PLIK: ./init/init.h
+============================================================
+
+#ifndef INIT_H
+#define INIT_H
+
+#include <zephyr/drivers/gpio.h>
+#include <zephyr/kernel.h>
+#include <zephyr/sys/printk.h>
+
+#define GPIO_INIT_ERR -1
+
+struct all_pins {
+  uint8_t led_num;
+  uint8_t row_num;
+  uint8_t col_num;
+
+  struct gpio_dt_spec *leds;
+  struct gpio_dt_spec *rows;
+  struct gpio_dt_spec *cols;
+};
+
+int init_validation(struct all_pins *pins);
+
+void init_configure(struct all_pins *pins);
+
+#endif
+
+
+
+============================================================
+PLIK: ./main.c
+============================================================
+
+#include "init/init.h"
+#include "leds/leds.h"
+#include "matrix/matrix.h"
+#include <zephyr/drivers/gpio.h>
+#include <zephyr/kernel.h>
+#include <zephyr/sys/printk.h>
+
+#ifdef CONFIG_KEYBOARD_SIDE_LEFT
+#include "ble/ble_client.h"
+#include "ble/ble_hid.h"
+#include "usb/usb.h"
+#include "usb_ble_event/usb_ble_event.h"
+
+#define TEXT "LEFT\n"
+#else
+#include "ble/ble_peripheral.h"
+#define TEXT "RIGHT\n"
+#endif
+
+K_THREAD_DEFINE(keyboard_tid, 1024, keyboard_task, NULL, NULL, NULL, 2, 0, 0);
+K_THREAD_DEFINE(led_tid, 1024, led_task, NULL, NULL, NULL, 2, 0, 0);
+
+#ifdef CONFIG_KEYBOARD_SIDE_LEFT
+K_THREAD_DEFINE(ble_tid, 2048, ble_task_master, NULL, NULL, NULL, 2, 0, 0);
+K_THREAD_DEFINE(usb_tid, 2048, usb_task, NULL, NULL, NULL, 2, 0, 0);
+K_THREAD_DEFINE(ble_pc_tid, 4096, ble_pc_task, NULL, NULL, NULL, 2, 0, 0);
+// K_THREAD_DEFINE(swap_tid, 512, swap_task, NULL, NULL, NULL, 2, 0, 0);
+#endif
+
+#ifdef CONFIG_KEYBOARD_SIDE_RIGHT
+K_THREAD_DEFINE(ble_tid, 2048, ble_task_slave, NULL, NULL, NULL, 2, 0, 0);
+#endif
+
+int main(void) {
+
+  // data for validation, not use
+  struct gpio_dt_spec leds[] = {led_red, led_green, led_blue};
+  struct gpio_dt_spec rows[] = {row1, row2, row3, row4, row5};
+  struct gpio_dt_spec cols[] = {col1, col2, col3, col4, col5, col6};
+
+  struct all_pins pins = {
+      .leds = leds,
+      .led_num = 3,
+      .rows = rows,
+      .row_num = ROW_SIZE,
+      .cols = cols,
+      .col_num = COL_SIZE,
+  };
+
+  // check if the pins are fine
+  init_configure(&pins);
+  if (init_validation(&pins) == -1)
+    return -1;
+
+  int x = 0;
+  while (true) {
+    if (x % 2)
+      led_state = red;
+    else
+      led_state = blue;
+    x++;
+    k_sleep(K_SECONDS(1));
+  }
+}
+
+
+
+============================================================
+PLIK: ./data_structures/bitset.h
+============================================================
+
+#ifndef BITSET_H
+#define BITSET_H
+
+#include <stdbool.h>
+#include <stdint.h>
+#include <string.h>
+
+#define SET_MAX 256 // maximum value is SET_MAX-1
+#define INTERVAL 8
+
+typedef struct {
+  uint8_t bits[SET_MAX / INTERVAL];
+} Set;
+
+void insert_set(Set *set, int val);
+
+void remove_set(Set *set, int val);
+
+void clear_set(Set *set);
+
+bool contains_set(Set *set, uint8_t val);
+
+size_t set_get_values(const Set *set, int *out);
+
+#endif
+
+
+
+============================================================
+PLIK: ./data_structures/bitset.c
+============================================================
+
+#include "bitset.h"
+
+void insert_set(Set *set, int val) {
+  if (val >= SET_MAX)
+    return;
+  uint8_t idx = val / INTERVAL;
+  set->bits[idx] |= 1 << (val % INTERVAL);
+}
+
+void remove_set(Set *set, int val) {
+  if (val >= SET_MAX)
+    return;
+  uint8_t idx = val / INTERVAL;
+  set->bits[idx] &= ~(1 << (val % INTERVAL));
+}
+
+void clear_set(Set *set) { memset(set->bits, 0, sizeof(set->bits)); }
+
+bool contains_set(Set *set, uint8_t val) {
+  uint8_t idx = val / INTERVAL;
+  return (set->bits[idx] & (1 << (val % INTERVAL))) != 0;
+}
+
+size_t set_get_values(const Set *set, int *out) {
+  size_t count = 0;
+
+  for (int i = 0; i < SET_MAX; ++i) {
+    int byte_idx = i / 8;
+    int bit_idx = i % 8;
+
+    if (set->bits[byte_idx] & (1u << bit_idx)) {
+      out[count++] = i;
+    }
+  }
+
+  return count;
+}
+
+
+
+============================================================
+PLIK: ./usb/usb_init.h
+============================================================
+
+// default usb init from documentation
+
+#ifndef USB_INIT_H
+#define USB_INIT_H
+
+#include <stdint.h>
+#include <zephyr/device.h>
+#include <zephyr/usb/bos.h>
+#include <zephyr/usb/usbd.h>
+
+#include <zephyr/logging/log.h>
+
+// It returns the configured and initialized USB device context on success,
+// otherwise it returns NULL.
+struct usbd_context *sample_usbd_init_device(usbd_msg_cb_t msg_cb);
+
+/*
+ * This function is similar to sample_usbd_init_device(), but does not
+ * initialize the device. It allows the application to set additional features,
+ * such as additional descriptors.
+ */
+struct usbd_context *sample_usbd_setup_device(usbd_msg_cb_t msg_cb);
+
+#endif
+
+
+
+============================================================
+PLIK: ./usb/usb.h
+============================================================
+
+#ifndef USB_H
+#define USB_H
+
+#include "../ble/ble_hid.h"
+#include "../bus/bus.h"
+#include "../usb_ble_event/usb_ble_event.h"
+#include "usb_init.h"
+#include <zephyr/device.h>
+#include <zephyr/kernel.h>
+#include <zephyr/logging/log.h>
+#include <zephyr/sys/printk.h>
+#include <zephyr/usb/class/usbd_hid.h>
+#include <zephyr/usb/usbd.h>
+
+int create_usb(void);
+int usb_send(void);
+void usb_task(void *p1, void *p2, void *p3);
+
+#endif
+
+
+
+============================================================
+PLIK: ./usb/usb.c
+============================================================
+
+#include "usb.h"
+#include "zephyr/usb/usbd_msg.h"
+
+#define HID_REGISTERED_ERR -1
+
+static const uint8_t hid_report_desc[] = HID_KEYBOARD_REPORT_DESC();
+
+// USBD_DEVICE_DEFINE(my_usb_device, DEVICE_DT_GET(DT_NODELABEL(zephyr_udc0)),
+//                    0x2fe3, 0x0001);
+
+UDC_STATIC_BUF_DEFINE(report, KB_REPORT_COUNT);
+static bool kb_ready;
+static uint32_t kb_duration;
+
+struct usbd_context *sample_usbd;
+
+const struct device *hid_dev;
+static bool hid_registered = 0;
+
+static bool debounce_flag = 0;
+
+static void input_cb(struct input_event *evt, void *user_data) {
+  // useless dla mnie
+}
+
+static void kb_iface_ready(const struct device *dev, const bool ready) {
+  printk("HID device %s interface is %s", dev->name,
+         ready ? "ready" : "not ready");
+  kb_ready = ready;
+}
+
+static int kb_get_report(const struct device *dev, const uint8_t type,
+                         const uint8_t id, const uint16_t len,
+                         uint8_t *const buf) {
+  printk("Get Report not implemented, Type %u ID %u", type, id);
+  // pc chce raport
+  return 0;
+}
+
+static int kb_set_report(const struct device *dev, const uint8_t type,
+                         const uint8_t id, const uint16_t len,
+                         const uint8_t *const buf) {
+  if (type != HID_REPORT_TYPE_OUTPUT) {
+    printk("Unsupported report type");
+    return -ENOTSUP;
+  }
+
+  // PC wysyla raport do klawy
+  // input do klawy np. do leda capsa
+
+  return 0;
+}
+
+// Idle duration is stored but not used to calculate idle reports.
+static void kb_set_idle(const struct device *dev, const uint8_t id,
+                        const uint32_t duration) {
+  printk("Set Idle %u to %u", id, duration);
+  kb_duration = duration;
+}
+
+static uint32_t kb_get_idle(const struct device *dev, const uint8_t id) {
+  printk("Get Idle %u to %u", id, kb_duration);
+  return kb_duration;
+}
+
+static void kb_set_protocol(const struct device *dev, const uint8_t proto) {
+  printk("Protocol changed to %s",
+         proto == 0U ? "Boot Protocol" : "Report Protocol");
+}
+
+static void kb_output_report(const struct device *dev, const uint16_t len,
+                             const uint8_t *const buf) {
+  kb_set_report(dev, HID_REPORT_TYPE_OUTPUT, 0U, len, buf);
+}
+
+struct hid_device_ops kb_ops = {
+    .iface_ready = kb_iface_ready,
+    .get_report = kb_get_report,
+    .set_report = kb_set_report,
+    .set_idle = kb_set_idle,
+    .get_idle = kb_get_idle,
+    .set_protocol = kb_set_protocol,
+    .output_report = kb_output_report,
+};
+
+static void msg_cb(struct usbd_context *const usbd_ctx,
+                   const struct usbd_msg *const msg) {
+  printk("USBD message: %s", usbd_msg_type_string(msg->type));
+
+  switch (msg->type) {
+  case USBD_MSG_CONFIGURATION:
+    usb_ready_changed(true);
+    printk(" - USB ready");
+    k_sem_give(&usb_sem);
+    break;
+
+  case USBD_MSG_VBUS_READY:
+    printk(" - VBUS ready");
+    if (usbd_enable(usbd_ctx)) {
+      printk(" - Failed to enable USB");
+    }
+    break;
+
+  case USBD_MSG_VBUS_REMOVED:
+    printk(" - VBUS removed");
+    usb_ready_changed(false);
+
+    if (usbd_disable(usbd_ctx)) {
+      printk(" - Failed to disable USB");
+    }
+    break;
+
+  case USBD_MSG_SUSPEND:
+    usb_ready_changed(false);
+    printk(" - USB suspended");
+    break;
+
+  case USBD_MSG_RESUME:
+    usb_ready_changed(true);
+    printk(" - USB resumed");
+    break;
+
+  default:
+    printk(" - USB Unhandled event");
+    break;
+  }
+
+  printk("\n");
+}
+
+static int register_hid_device(void) {
+  int ret;
+
+  hid_dev = DEVICE_DT_GET_ONE(zephyr_hid_device);
+
+  printk("HID device name: %s\n", hid_dev->name);
+
+  if (!device_is_ready(hid_dev)) {
+    printk("HID Device is not ready");
+    return -EIO;
+  }
+
+  ret = hid_device_register(hid_dev, hid_report_desc, sizeof(hid_report_desc),
+                            &kb_ops);
+  if (ret != 0) {
+    printk("Failed to register HID Device, %d", ret);
+    return ret;
+  }
+
+  hid_registered = 1;
+
+  return 0;
+}
+
+static int configure_hid_polling(void) {
+  int ret;
+
+  if (IS_ENABLED(CONFIG_USBD_HID_SET_POLLING_PERIOD)) {
+    ret = hid_device_set_in_polling(hid_dev, 1000);
+    if (ret) {
+      printk("Failed to set IN report polling period, %d", ret);
+      return ret;
+    }
+
+    ret = hid_device_set_out_polling(hid_dev, 1000);
+    if (ret != 0 && ret != -ENOTSUP) {
+      printk("Failed to set OUT report polling period, %d", ret);
+      return ret;
+    }
+  }
+
+  return 0;
+}
+
+static int initialize_usb_device(void) {
+  sample_usbd = sample_usbd_init_device(msg_cb);
+
+  if (sample_usbd == NULL) {
+    printk("Failed to initialize USB device");
+    return -ENODEV;
+  }
+
+  return 0;
+}
+
+int create_usb(void) {
+  int ret;
+
+  printk("usb_hid_init()\n");
+
+  ret = register_hid_device();
+  if (ret) {
+    return ret;
+  }
+
+  ret = configure_hid_polling();
+  if (ret) {
+    return ret;
+  }
+
+  ret = initialize_usb_device();
+  if (ret) {
+    return ret;
+  }
+
+  printk("USB HID INITIALIZED (not enabled yet)\n");
+
+  return 0;
+}
+
+static int validate_usb_hid(void) {
+  if (!hid_registered) {
+    printk("usb - hid not registered\n");
+    return HID_REGISTERED_ERR;
+  }
+
+  if (!device_is_ready(hid_dev)) {
+    printk("HID Device is not ready\n");
+    return -EIO;
+  }
+
+  return 0;
+}
+
+static int handle_remote_wakeup(void) {
+  int ret;
+
+  if (IS_ENABLED(CONFIG_SAMPLE_USBD_REMOTE_WAKEUP) &&
+      usbd_is_suspended(sample_usbd)) {
+
+    // on a press of any button, send wakeup request
+    if (report[KB_KEY_CODE1] != 0x0) {
+      ret = usbd_wakeup_request(sample_usbd);
+      if (ret) {
+        printk("Remote wakeup error, %d", ret);
+        return ret;
+      }
+    }
+  }
+
+  return 0;
+}
+
+int usb_send(void) {
+  int ret;
+
+  ret = validate_usb_hid();
+  if (ret) {
+    return ret;
+  }
+
+  ret = handle_remote_wakeup();
+  if (ret) {
+    return ret;
+  }
+
+  ret = hid_device_submit_report(hid_dev, KB_REPORT_COUNT, report);
+  if (ret) {
+    return ret;
+  }
+
+  return 0;
+}
+
+static int usb_start(void) {
+  int ret;
+  if (!usbd_can_detect_vbus(sample_usbd)) {
+    ret = usbd_enable(sample_usbd);
+    if (ret) {
+      printk("Failed to enable USB device support, %d\n", ret);
+      return ret;
+    }
+  }
+  printk("USB enabled\n");
+  return 0;
+}
+
+static int usb_stop(void) {
+  int ret = usbd_disable(sample_usbd);
+  if (ret) {
+    printk("Failed to disable USB device support, %d\n", ret);
+    return ret;
+  }
+  printk("USB disabled\n");
+  return 0;
+}
+
+static int initialize_usb_task(bool *usb_active) {
+  if (create_usb() != 0) {
+    printk("USB HID init failed, task exiting\n");
+    return -1;
+  }
+
+  *usb_active = false;
+
+  if (usb_ready) {
+    usb_start();
+    *usb_active = true;
+  }
+
+  return 0;
+}
+
+static void handle_usb_events(uint32_t events, bool *usb_active) {
+  if (events & USB_READY_BIT) {
+    if (!*usb_active) {
+      usb_start();
+      *usb_active = true;
+    }
+  } else if (events & USB_UNREADY_BIT) {
+    if (*usb_active) {
+      usb_stop();
+      *usb_active = false;
+    }
+  }
+}
+
+static void process_usb_report(void) {
+  memset(report, 0, sizeof(report));
+
+  k_msgq_get(&msgq_kb_report, report, K_NO_WAIT);
+
+  if (debounce_flag == 0 && report[KB_KEY_CODE1] == 0)
+    debounce_flag = 1;
+  else
+    debounce_flag = 0;
+
+  if (!debounce_flag) {
+    usb_send();
+  }
+}
+
+void usb_task(void *p1, void *p2, void *p3) {
+  bool usb_active;
+
+  if (initialize_usb_task(&usb_active) != 0) {
+    return;
+  }
+
+  while (1) {
+    uint32_t events =
+        k_event_wait(&usb_state_event, USB_READY_BIT | USB_UNREADY_BIT, true,
+                     usb_active ? K_MSEC(pc_interval) : K_FOREVER);
+
+    handle_usb_events(events, &usb_active);
+
+    if (!usb_active) {
+      continue;
+    }
+
+    process_usb_report();
+  }
+}
+
+
+
+============================================================
+PLIK: ./usb/usb_init.c
+============================================================
+
+#include "usb_init.h"
+
+LOG_MODULE_REGISTER(usbd_sample_config);
+
+/* By default, do not register the USB DFU class DFU mode instance. */
+static const char *const blocklist[] = {
+    "dfu_dfu",
+    NULL,
+};
+
+/* doc device instantiation start */
+/*
+ * Instantiate a context named sample_usbd using the default USB device
+ * controller, the Zephyr project vendor ID, and the sample product ID.
+ * Zephyr project vendor ID must not be used outside of Zephyr samples.
+ */
+USBD_DEVICE_DEFINE(sample_usbd, DEVICE_DT_GET(DT_NODELABEL(zephyr_udc0)),
+                   CONFIG_SAMPLE_USBD_VID, CONFIG_SAMPLE_USBD_PID);
+/* doc device instantiation end */
+
+/* doc string instantiation start */
+USBD_DESC_LANG_DEFINE(sample_lang);
+USBD_DESC_MANUFACTURER_DEFINE(sample_mfr, CONFIG_SAMPLE_USBD_MANUFACTURER);
+USBD_DESC_PRODUCT_DEFINE(sample_product, CONFIG_SAMPLE_USBD_PRODUCT);
+IF_ENABLED(CONFIG_HWINFO, (USBD_DESC_SERIAL_NUMBER_DEFINE(sample_sn)));
+
+/* doc string instantiation end */
+
+USBD_DESC_CONFIG_DEFINE(fs_cfg_desc, "FS Configuration");
+USBD_DESC_CONFIG_DEFINE(hs_cfg_desc, "HS Configuration");
+
+/* doc configuration instantiation start */
+static const uint8_t attributes =
+    (IS_ENABLED(CONFIG_SAMPLE_USBD_SELF_POWERED) ? USB_SCD_SELF_POWERED : 0) |
+    (IS_ENABLED(CONFIG_SAMPLE_USBD_REMOTE_WAKEUP) ? USB_SCD_REMOTE_WAKEUP : 0);
+
+/* Full speed configuration */
+USBD_CONFIGURATION_DEFINE(sample_fs_config, attributes,
+                          CONFIG_SAMPLE_USBD_MAX_POWER, &fs_cfg_desc);
+
+/* High speed configuration */
+USBD_CONFIGURATION_DEFINE(sample_hs_config, attributes,
+                          CONFIG_SAMPLE_USBD_MAX_POWER, &hs_cfg_desc);
+/* doc configuration instantiation end */
+
+#if CONFIG_SAMPLE_USBD_20_EXTENSION_DESC
+/*
+ * This does not yet provide valuable information, but rather serves as an
+ * example, and will be improved in the future.
+ */
+static const struct usb_bos_capability_lpm bos_cap_lpm = {
+    .bLength = sizeof(struct usb_bos_capability_lpm),
+    .bDescriptorType = USB_DESC_DEVICE_CAPABILITY,
+    .bDevCapabilityType = USB_BOS_CAPABILITY_EXTENSION,
+    .bmAttributes = 0UL,
+};
+
+USBD_DESC_BOS_DEFINE(sample_usbext, sizeof(bos_cap_lpm), &bos_cap_lpm);
+#endif
+
+static void sample_fix_code_triple(struct usbd_context *uds_ctx,
+                                   const enum usbd_speed speed) {
+  /* Always use class code information from Interface Descriptors */
+  if (IS_ENABLED(CONFIG_USBD_CDC_ACM_CLASS) ||
+      IS_ENABLED(CONFIG_USBD_CDC_ECM_CLASS) ||
+      IS_ENABLED(CONFIG_USBD_CDC_NCM_CLASS) ||
+      IS_ENABLED(CONFIG_USBD_MIDI2_CLASS) ||
+      IS_ENABLED(CONFIG_USBD_AUDIO2_CLASS) ||
+      IS_ENABLED(CONFIG_USBD_VIDEO_CLASS)) {
+    /*
+     * Class with multiple interfaces have an Interface
+     * Association Descriptor available, use an appropriate triple
+     * to indicate it.
+     */
+    usbd_device_set_code_triple(uds_ctx, speed, USB_BCC_MISCELLANEOUS, 0x02,
+                                0x01);
+  } else {
+    usbd_device_set_code_triple(uds_ctx, speed, 0, 0, 0);
+  }
+}
+
+struct usbd_context *sample_usbd_setup_device(usbd_msg_cb_t msg_cb) {
+  int err;
+
+  /* doc add string descriptor start */
+  err = usbd_add_descriptor(&sample_usbd, &sample_lang);
+  if (err) {
+    LOG_ERR("Failed to initialize language descriptor (%d)", err);
+    return NULL;
+  }
+
+  err = usbd_add_descriptor(&sample_usbd, &sample_mfr);
+  if (err) {
+    LOG_ERR("Failed to initialize manufacturer descriptor (%d)", err);
+    return NULL;
+  }
+
+  err = usbd_add_descriptor(&sample_usbd, &sample_product);
+  if (err) {
+    LOG_ERR("Failed to initialize product descriptor (%d)", err);
+    return NULL;
+  }
+
+  IF_ENABLED(CONFIG_HWINFO,
+             (err = usbd_add_descriptor(&sample_usbd, &sample_sn);))
+  if (err) {
+    LOG_ERR("Failed to initialize SN descriptor (%d)", err);
+    return NULL;
+  }
+  /* doc add string descriptor end */
+
+  if (USBD_SUPPORTS_HIGH_SPEED &&
+      usbd_caps_speed(&sample_usbd) == USBD_SPEED_HS) {
+    err =
+        usbd_add_configuration(&sample_usbd, USBD_SPEED_HS, &sample_hs_config);
+    if (err) {
+      LOG_ERR("Failed to add High-Speed configuration");
+      return NULL;
+    }
+
+    err = usbd_register_all_classes(&sample_usbd, USBD_SPEED_HS, 1, blocklist);
+    if (err) {
+      LOG_ERR(" 1 Failed to add register classes, (%d)\n", err);
+      return NULL;
+    }
+
+    sample_fix_code_triple(&sample_usbd, USBD_SPEED_HS);
+  }
+
+  /* doc configuration register start */
+  err = usbd_add_configuration(&sample_usbd, USBD_SPEED_FS, &sample_fs_config);
+  if (err) {
+    LOG_ERR("Failed to add Full-Speed configuration");
+    return NULL;
+  }
+  /* doc configuration register end */
+
+  /* doc functions register start */
+  err = usbd_register_all_classes(&sample_usbd, USBD_SPEED_FS, 1, blocklist);
+  if (err) {
+    LOG_ERR(" 2 Failed to add register classes (%d)\n", err);
+    return NULL;
+  }
+  /* doc functions register end */
+
+  sample_fix_code_triple(&sample_usbd, USBD_SPEED_FS);
+  usbd_self_powered(&sample_usbd, attributes & USB_SCD_SELF_POWERED);
+
+  if (msg_cb != NULL) {
+    /* doc device init-and-msg start */
+    err = usbd_msg_register_cb(&sample_usbd, msg_cb);
+    if (err) {
+      LOG_ERR("Failed to register message callback");
+      return NULL;
+    }
+    /* doc device init-and-msg end */
+  }
+
+#if CONFIG_SAMPLE_USBD_20_EXTENSION_DESC
+  (void)usbd_device_set_bcd_usb(&sample_usbd, USBD_SPEED_FS, 0x0201);
+  (void)usbd_device_set_bcd_usb(&sample_usbd, USBD_SPEED_HS, 0x0201);
+
+  err = usbd_add_descriptor(&sample_usbd, &sample_usbext);
+  if (err) {
+    LOG_ERR("Failed to add USB 2.0 Extension Descriptor");
+    return NULL;
+  }
+#endif
+
+  return &sample_usbd;
+}
+
+struct usbd_context *sample_usbd_init_device(usbd_msg_cb_t msg_cb) {
+  int err;
+
+  if (sample_usbd_setup_device(msg_cb) == NULL) {
+    return NULL;
+  }
+
+  /* doc device init start */
+  err = usbd_init(&sample_usbd);
+  if (err) {
+    LOG_ERR("Failed to initialize device support");
+    return NULL;
+  }
+  /* doc device init end */
+
+  return &sample_usbd;
+}
+
+

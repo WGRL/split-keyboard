@@ -1,0 +1,12 @@
+keyboard_role {
+    role = "LEFT";
+};
+
+hid_dev_0: hid_dev_0 {
+	compatible = "zephyr,hid-device";
+	status = "okay";
+	out-report-size = <64>;
+	in-report-size = <64>;
+	out-polling-period-us = <16000>;
+	in-polling-period-us = <16000>;
+};

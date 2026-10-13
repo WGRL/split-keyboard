@@ -1,0 +1,73 @@
+source "Kconfig.zephyr"
+
+#general
+config KEYBOARD_SIDE_LEFT
+    bool "Left side of the keyboard"
+    default n
+    
+config KEYBOARD_SIDE_RIGHT
+    bool "Right side of the keyboard"
+    default n
+
+# USB hid
+config SAMPLE_USBD_REMOTE_WAKEUP
+    bool "enable rempte wakeup"
+	default y
+
+config SAMPLE_USBD_SELF_POWERED
+	bool "USB device sample Self-powered attribute"
+	default n
+	help
+	  Set the Self-powered attribute in the sample configuration. 
+	  y if the device only takes enough energy from usb to communicate,
+	  n if its powered by usb.
+
+
+config SAMPLE_USBD_VID
+	hex "USB device sample Vendor ID"
+	default 0x2fe3
+	help
+	  USB device sample Vendor ID. The default id (0x2fe3) is associated to
+	  Zephyr Project, you must use your own VID for samples and applications
+	  outside of Zephyr Project.
+
+config SAMPLE_USBD_PID
+	hex "USB device sample Product ID"
+	default 0x0001
+	help
+	  USB device sample Product ID. You must use your own PID for samples
+	  and applications outside of Zephyr Project.
+
+config SAMPLE_USBD_MANUFACTURER
+	string "USB device sample manufacturer string"
+	default "WGRL"
+	help
+	  USB device sample manufacturer string.
+
+config SAMPLE_USBD_PRODUCT
+	string "USB device sample product string"
+	default "USB keyboard"
+	help
+	  USB device sample product stringa.
+
+config SAMPLE_USBD_MAX_POWER
+	int "USB device sample bMaxPower value"
+	default 125
+	range 0 250
+	help
+	  bMaxPower value in the sample configuration in 2 mA units.
+
+config SAMPLE_USBD_20_EXTENSION_DESC
+	bool "Use default USB 2.0 Extension Descriptor"
+	depends on USBD_BOS_SUPPORT
+	help
+	  Set bcdUSB value to 0201 and use default USB 2.0 Extension Descriptor.
+
+# BLE hid
+config SAMPLE_BT_USE_AUTHENTICATION
+	bool "Enable passkey authentication"
+	default y
+	help
+	  Enable the passkey authentication callback and register the GATT
+	  read and write attributes as authentication required.
+
