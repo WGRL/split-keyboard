@@ -18,7 +18,7 @@ depending on the side
 
 # Electronics
 The files for printed PCBs are stored in `hardware_printed` directory. I'll also put upgraded version in `hardware_enhanced` directory.
-![Schematics for left side (printed). Right is the same.](Img/left_printed.pdf)
+[![Schematics for left side (printed). Right is the same.](Img/left_printed_preview.png)](Img/left_printed.pdf)
 
 # PCB
 Printed PCBs. The files are in `hardware_printed` directory. They are based on only THT elements for easier soldering.
