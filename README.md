@@ -19,10 +19,14 @@ To program the mcu you use eithter
 depending on the side
 
 # Electronics
-The files for printed PCBs are stored in `hardware_printed` directory. I'll also put upgraded version in `hardware_enhanced` directory.
-[![Schematics for left side (printed). Right is the same.](Img/left_printed_preview.png)](Img/left_printed.pdf)
+The files for printed PCBs are stored in `hardware` directory.
+
+This is for personal use so note that the boards don't have any ESD, reverse polarity, overvoltage protection etc.
+Also it lacks extra capacitor to sustain battery voltage.
+
+[![Schematics for left side. Right is the same.](Img/left_printed_preview.png)](Img/left_printed.pdf)
 
 # PCB
-Printed PCBs. The files are in `hardware_printed` directory. They are based on only THT elements for easier soldering.
+Printed PCBs. The files are in `hardware` directory. They are based on only THT elements for easier soldering.
 ![left side](Img/pcb_left_back.jpg)
 ![right side](Img/pcb_right_back.jpg)
