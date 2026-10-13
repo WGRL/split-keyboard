@@ -1,5 +1,7 @@
 # split-keyboard
 Split keyboard with ble and usb. Custom pcb based on nrf52840 mcu module with specific firmware written in  C (Zephyr)
+![left side](Img/case_left.jpg)
+![right side](Img/case_right.jpg)
 
 # Firmware
 All the firmware is stored in `software` directory. It also contains all the configs for Zephyr, Kconfig, CMAKE, scripts etc.
