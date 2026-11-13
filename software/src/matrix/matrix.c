@@ -1,5 +1,5 @@
 #include "matrix.h"
-#include "syscalls/kernel.h"
+#include <zephyr/kernel.h>
 #include <string.h>
 
 #define NO_KEY 255

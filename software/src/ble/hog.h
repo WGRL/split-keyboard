@@ -2,21 +2,19 @@
 #define HOG_H
 
 #include "../bus/bus.h"
-#include <errno.h>
-#include <stddef.h>
-#include <string.h>
-#include <zephyr/bluetooth/bluetooth.h>
+#include <stdbool.h>
+#include <stdint.h>
 #include <zephyr/bluetooth/conn.h>
-#include <zephyr/bluetooth/gatt.h>
-#include <zephyr/bluetooth/hci.h>
-#include <zephyr/bluetooth/uuid.h>
-#include <zephyr/drivers/gpio.h>
-#include <zephyr/kernel.h>
-#include <zephyr/sys/byteorder.h>
-#include <zephyr/sys/printk.h>
-#include <zephyr/types.h>
 
-void hog_init(void);
-void send_report(void);
+/* HID over GATT (HOGP) keyboard service exposed to the PC. */
+
+/* True when the PC has enabled notifications on the input report. */
+bool hog_is_subscribed(struct bt_conn *conn);
+
+/* Send an 8-byte boot-style keyboard report (mod, reserved, 6 keys). */
+int hog_send_report(struct bt_conn *conn, const uint8_t report[KB_REPORT_COUNT]);
+
+/* Last LED state written by the PC (bit0 NumLock, bit1 CapsLock, ...). */
+uint8_t hog_get_leds(void);
 
 #endif

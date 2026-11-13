@@ -12,7 +12,6 @@
 
 static struct key_code tx_value_slave;
 static uint16_t interval_ms;
-static struct bt_conn *current_conn;
 
 static struct bt_uuid_128 service_uuid =
     BT_UUID_INIT_128(0xf0, 0xde, 0xbc, 0x9a, 0x78, 0x56, 0x34, 0x12, 0x34, 0x12,
@@ -49,58 +48,70 @@ static const struct bt_data ad[] = {
             sizeof(CONFIG_BT_DEVICE_NAME) - 1),
 };
 
+/* Link to the left half. Written from BT callbacks, read by the task. */
 static struct bt_conn *default_conn;
+
+static void update_interval(uint16_t interval) {
+  uint16_t ms = interval * INTERVAL_MUL;
+
+  interval_ms = ms > 0 ? ms : 1;
+}
 
 static void connected(struct bt_conn *conn, uint8_t err) {
   if (err) {
     printk("Connection failed (err %u)\n", err);
     return;
   }
-  bt_le_adv_stop();
+
   printk("Connected\n");
+
+  if (default_conn) {
+    bt_conn_unref(default_conn);
+  }
   default_conn = bt_conn_ref(conn);
-  printk("conn=%p\n", conn);
-  current_conn = bt_conn_ref(conn);
+
+  struct bt_conn_info info;
+  if (bt_conn_get_info(conn, &info) == RET_FINE) {
+    update_interval(info.le.interval);
+  }
 
   bt_conn_le_param_update(conn,
                           BT_LE_CONN_PARAM(MIN_INTERVAL_REQ, MAX_INTERVAL_REQ,
                                            LATENCY_BLE, TIMEOUT_BLE));
 }
 
-static void ble_adv() {
-  int8_t err =
-      bt_le_adv_start(BT_LE_ADV_CONN_FAST_2, ad, ARRAY_SIZE(ad), NULL, 0);
+/* Returns 0 when advertising is running. Fails with -ENOMEM while the old
+ * connection object is still being released; the task simply retries. */
+static int ble_adv(void) {
+  int err = bt_le_adv_start(BT_LE_ADV_CONN_FAST_2, ad, ARRAY_SIZE(ad), NULL, 0);
 
+  if (err == -EALREADY) {
+    return 0;
+  }
   if (err) {
-    printk("Advertising error\n");
-    return;
+    return err;
   }
-  struct bt_conn_info info;
 
-  if (bt_conn_get_info(current_conn, &info) == RET_FINE) {
-    if (info.type == BT_CONN_TYPE_LE) {
-      interval_ms = info.le.interval;
-    }
-  }
+  printk("Advertising\n");
+  return 0;
 }
 
 static void disconnected(struct bt_conn *conn, uint8_t reason) {
-
   printk("Disconnected (reason %u)\n", reason);
-  if (current_conn) {
-    bt_conn_unref(current_conn);
-    current_conn = NULL;
+
+  if (conn != default_conn) {
+    return;
   }
-  if (reason != BT_HCI_ERR_REMOTE_USER_TERM_CONN) {
-    // delay to prevent instant reconnect
-    // k_sleep(K_SECONDS(RECONNECT_DELAY));
-    ble_adv();
-  }
+
+  /* Drop our only reference so the connection object can be reused;
+   * the task restarts advertising, whatever the disconnect reason. */
+  bt_conn_unref(default_conn);
+  default_conn = NULL;
 }
 
 static void le_param_updated(struct bt_conn *conn, uint16_t interval,
                              uint16_t latency, uint16_t timeout) {
-  interval_ms = interval * INTERVAL_MUL;
+  update_interval(interval);
 }
 
 BT_CONN_CB_DEFINE(conn_callbacks) = {.connected = connected,
@@ -120,9 +131,22 @@ int ble_setup_slave() {
   }
 
   printk("BLE ready\n");
-  ble_adv();
 
   return 0;
+}
+
+/* Take our own reference so the connection cannot be freed by a
+ * disconnect callback while the task is using it. */
+static struct bt_conn *get_conn(void) {
+  struct bt_conn *conn = NULL;
+
+  k_sched_lock();
+  if (default_conn) {
+    conn = bt_conn_ref(default_conn);
+  }
+  k_sched_unlock();
+
+  return conn;
 }
 
 void ble_task_slave(void *p1, void *p2, void *p3) {
@@ -130,8 +154,17 @@ void ble_task_slave(void *p1, void *p2, void *p3) {
   const struct bt_gatt_attr *attr = &my_service.attrs[GATT_SERVICE_ID];
 
   while (1) {
-    if (default_conn == NULL ||
-        !bt_gatt_is_subscribed(default_conn, attr, BT_GATT_CCC_NOTIFY)) {
+    struct bt_conn *conn = get_conn();
+
+    if (conn == NULL) {
+      /* Not connected: keep advertising until the left half comes back. */
+      ble_adv();
+      k_sleep(K_MSEC(50));
+      continue;
+    }
+
+    if (!bt_gatt_is_subscribed(conn, attr, BT_GATT_CCC_NOTIFY)) {
+      bt_conn_unref(conn);
       k_sleep(K_MSEC(50));
       continue;
     }
@@ -140,8 +173,10 @@ void ble_task_slave(void *p1, void *p2, void *p3) {
     struct key_code key_vals[HID_LIM];
     size_to_push = get_all_queue_l(key_vals);
     for (size_t i = 0; i < size_to_push; i++) {
-      bt_gatt_notify(default_conn, attr, &key_vals[i], sizeof(key_vals[i]));
+      bt_gatt_notify(conn, attr, &key_vals[i], sizeof(key_vals[i]));
     }
+
+    bt_conn_unref(conn);
 
     k_sleep(K_MSEC(interval_ms));
   }

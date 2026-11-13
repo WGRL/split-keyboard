@@ -19,10 +19,6 @@ static bool hid_registered = 0;
 
 static bool debounce_flag = 0;
 
-static void input_cb(struct input_event *evt, void *user_data) {
-  // useless dla mnie
-}
-
 static void kb_iface_ready(const struct device *dev, const bool ready) {
   printk("HID device %s interface is %s", dev->name,
          ready ? "ready" : "not ready");

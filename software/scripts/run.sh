@@ -20,6 +20,6 @@ rm -rf "$BUILD_DIR"
 west build -b "$BOARD" -p always -d "$BUILD_DIR" \
   -- -DCONF_FILE="config/prj.conf;$CONF_FILE"\
 
-cp "$BUILD_DIR/zephyr/zephyr.uf2" "/media/$USER/XIAO-SENSE/"
+cp "$BUILD_DIR/zephyr/zephyr.uf2" "/run/media/$USER/XIAO-SENSE/"
 
 cp "$BUILD_DIR/compile_commands.json" "build/compile_commands.json"
