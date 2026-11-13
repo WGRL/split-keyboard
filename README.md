@@ -13,6 +13,10 @@ USB and Bluetooth are automatically switched. If the USB connection is detected 
 
 The name of the device is automatically WGRL_KEYBOARD, but you can change it in `software/config/prj_left.conf` in the `# Names` section.  
 
+# Tools
+All the important tools used in software development are listed in [version.info](version.info). 
+The most important thing here is the Zephyr and west version.
+
 # Compilation
 To program the mcu you use eithter
 `./scripts/run.sh left` or `./scripts/run.sh right` 
@@ -30,3 +34,6 @@ Also it lacks extra capacitor to sustain battery voltage.
 Printed PCBs. The files are in `hardware` directory. They are based on only THT elements for easier soldering.
 ![left side](Img/pcb_left_back.jpg)
 ![right side](Img/pcb_right_back.jpg)
+
+# Case
+Case for left and right side are stored in `/case` directory. Right side is 3mm higher, because of LEDs placement.
