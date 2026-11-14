@@ -22,6 +22,20 @@ To program the mcu you use eithter
 `./scripts/run.sh left` or `./scripts/run.sh right` 
 depending on the side
 
+# Layout
+The layout is compiled into the firmware. To change it you edit two source
+files, rebuild, and flash. There are no layers and no runtime remapping.
+
+[src/bus/bus.c](software/src/bus/bus.c) - which key code each switch sends
+
+[src/matrix/matrix.c](software/src/bus/bus.c) - which switches act as modifiers (Ctrl, Shift, Alt...)
+
+# LEDs
+The LEDs color changes when any key with hid-code `0x00` is clicked (according to your #Layout).
+The left side also will always turn white when CAPS_LOCK is activated.
+Colors are set separately for each side.
+The cycle is black -> red -> green -> blue -> black. It changes once per press.
+
 # Electronics
 The files for printed PCBs are stored in `hardware` directory.
 
