@@ -14,6 +14,7 @@
 
 int create_usb(void);
 int usb_send(void);
+uint8_t usb_get_leds(void);
 void usb_task(void *p1, void *p2, void *p3);
 
 #endif

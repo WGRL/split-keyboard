@@ -1,5 +1,12 @@
 #include "leds.h"
 
+#ifdef CONFIG_KEYBOARD_SIDE_LEFT
+#include "../ble/hog.h"
+#include "../usb/usb.h"
+
+#define LED_CAPS_LOCK 0x02
+#endif
+
 const struct gpio_dt_spec led_red = GPIO_DT_SPEC_GET(LED0_NODE, gpios);
 const struct gpio_dt_spec led_green = GPIO_DT_SPEC_GET(LED1_NODE, gpios);
 const struct gpio_dt_spec led_blue = GPIO_DT_SPEC_GET(LED2_NODE, gpios);
@@ -22,6 +29,13 @@ static void set_color(int r, int g, int b) {
 // potem zrob osobne flagi, zeby kolory mogly sie mieszac
 // albo zeby bylo pol na pol, tez cool
 static void color_switch() {
+#ifdef CONFIG_KEYBOARD_SIDE_LEFT
+  // caps lock state reported by the PC
+  if ((usb_ready ? usb_get_leds() : hog_get_leds()) & LED_CAPS_LOCK) {
+    set_color(255, 255, 255);
+    return;
+  }
+#endif
   switch (led_state) {
   case black:
     set_color(0, 0, 0);
@@ -44,13 +58,13 @@ static void color_switch() {
 void led_task(void *p1, void *p2, void *p3) {
   led_state = black;
   while (1) {
-    underglow();
+    usb_led();
     color_switch();
     k_sleep(K_MSEC(200));
   }
 }
 
-void underglow() {
+void usb_led() {
   bool usb_status = nrf_power_usbregstatus_vbusdet_get(NRF_POWER);
   if (!usb_status)
     gpio_pin_set_dt(&led_red, 1);

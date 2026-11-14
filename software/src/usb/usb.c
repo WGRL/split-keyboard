@@ -19,6 +19,10 @@ static bool hid_registered = 0;
 
 static bool debounce_flag = 0;
 
+static uint8_t led_report;
+
+uint8_t usb_get_leds(void) { return led_report; }
+
 static void kb_iface_ready(const struct device *dev, const bool ready) {
   printk("HID device %s interface is %s", dev->name,
          ready ? "ready" : "not ready");
@@ -43,6 +47,8 @@ static int kb_set_report(const struct device *dev, const uint8_t type,
 
   // PC wysyla raport do klawy
   // input do klawy np. do leda capsa
+  if (len > 0)
+    led_report = buf[0];
 
   return 0;
 }

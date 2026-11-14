@@ -8,7 +8,7 @@
 #include <zephyr/kernel.h>
 #include <zephyr/sys/printk.h>
 
-#define LED_SIZE 4
+#define LED_SIZE 5
 
 #define LED0_NODE DT_ALIAS(led0)
 #define LED1_NODE DT_ALIAS(led1)
@@ -20,7 +20,7 @@ extern const struct gpio_dt_spec led_red;
 extern const struct gpio_dt_spec led_green;
 extern const struct gpio_dt_spec led_blue;
 
-void underglow();
+void usb_led();
 void led_task(void *p1, void *p2, void *p3);
 
 #endif

@@ -18,8 +18,10 @@
 
 #ifdef CONFIG_KEYBOARD_SIDE_LEFT
 #define COMMUNICATION_FREQ COMM_FREQ_LEFT
+#define VALUES_TABLE values_table_l
 #else
 #define COMMUNICATION_FREQ COMM_FREQ_RIGHT
+#define VALUES_TABLE values_table_r
 #endif
 
 // gpio defs
@@ -42,14 +44,12 @@ static struct pos l_shift = {.x = 3, .y = 0};
 static struct pos l_alt = {.x = 4, .y = 2};
 static struct pos l_super = {.x = 4, .y = 1};
 static struct pos r_alt = {.x = NO_KEY, .y = NO_KEY};
-static struct pos caps = {.x = 2, .y = 0};
 #else
 static struct pos l_ctrl = {.x = NO_KEY, .y = NO_KEY};
 static struct pos l_shift = {.x = NO_KEY, .y = NO_KEY};
 static struct pos l_alt = {.x = NO_KEY, .y = NO_KEY};
 static struct pos l_super = {.x = NO_KEY, .y = NO_KEY};
 static struct pos r_alt = {.x = 4, .y = 3};
-static struct pos caps = {.x = NO_KEY, .y = NO_KEY};
 #endif
 
 struct pos keys_clicked[HID_LIM];
@@ -119,11 +119,36 @@ void keyboard_task(void *p1, void *p2, void *p3) {
   }
 }
 
-static void detect_color_change(int x, int y) {
-  if (x == caps.x && y == caps.y) {
-    led_state = white;
-  } else {
-    led_state = green;
+static bool color_key_in(struct pos *keys, uint8_t count) {
+  for (int i = 0; i < count; i++) {
+    if (VALUES_TABLE[keys[i].x][keys[i].y] == 0x00)
+      return true;
+  }
+  return false;
+}
+
+// a key with value 0x00 switches to the next color, once per press
+static void detect_color_change(void) {
+  static bool held;
+
+  if (!color_key_in(keys_clicked, hid_kpos)) {
+    held = false;
+  } else if (!held && color_key_in(ready_to_send, rts_idx)) {
+    held = true;
+    switch (led_state) {
+    case black:
+      led_state = red;
+      break;
+    case red:
+      led_state = green;
+      break;
+    case green:
+      led_state = blue;
+      break;
+    default:
+      led_state = black;
+      break;
+    }
   }
 }
 
@@ -207,12 +232,13 @@ void scan_all(struct matrix *mtx) {
 
   build_ready_to_send_list();
 
+  detect_color_change();
+
   process_ready_positions();
 }
 
 static uint8_t set_modifiers(uint8_t x, uint8_t y) {
   uint8_t modifiers = MOD_CLEAR;
-  detect_color_change(l_ctrl.x, l_ctrl.y);
   if (x == l_ctrl.x && y == l_ctrl.y) {
     modifiers |= MOD_L_CTRL;
   } else if (x == l_shift.x && y == l_shift.y) {

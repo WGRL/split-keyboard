@@ -1,0 +1,68 @@
+# Build environment for the nrf52840-keyboard firmware.
+# Recorded 2026-11-13, at project commit deb971c ("right reconnection fix").
+# This is the setup the firmware is known to compile with.
+
+[zephyr]
+version        = 4.5.0-rc1
+describe       = v4.5.0-rc1-483-g920074c07cf
+commit         = 920074c07cf4b503f70670cf424e4add4325d05a
+commit_date    = 2026-10-10 22:47:09 +0200
+workspace      = ~/zephyrproject            (west workspace, manifest: zephyr/west.yml)
+venv           = ~/zephyrproject/.venv
+
+[toolchain]
+variant        = zephyr
+sdk            = Zephyr SDK 1.0.1           (~/zephyr-sdk-1.0.1)
+compiler       = arm-zephyr-eabi-gcc 14.3.0
+libc           = picolibc
+
+[host_tools]
+west           = 1.5.0
+python         = 3.14.10
+cmake          = 4.4.5
+ninja          = 1.13.2
+dtc            = 1.8.1
+host_os        = Arch Linux, kernel 7.2.15-arch1-1
+
+[python_packages]
+pyelftools     = 0.33
+pykwalify      = 1.8.0
+PyYAML         = 6.0.3
+intelhex       = 2.3.0
+
+[target]
+board          = xiao_ble                   (Seeed XIAO BLE)
+board_target   = xiao_ble/nrf52840
+soc            = nrf52840
+bt_controller  = Zephyr LL (BT_LL_SW_SPLIT)
+output         = zephyr.uf2                 (UF2 family 0xada52840)
+optimization   = CONFIG_DEBUG_OPTIMIZATIONS (from CONFIG_DEBUG=y)
+
+[modules]
+# west module revisions the build depends on
+hal_nordic     = c708b9fe1b7a36090c468374811a6e934b97e54a
+cmsis          = 512cc7e895e8491696b61f7ba8066b4a182569b8
+cmsis_6        = 1c1840af7a7e757d6e2fec3ddb0e5ce0dfcc93c8
+mbedtls        = c43f34b93797e81fd0257c30004dcd0ae332ae51
+tf-psa-crypto  = 765af96a20a2b408474dcd950372ba9af4d26b62
+segger         = 50892fdbcf2f570e67baa72b8894a66b16946f72
+
+[build]
+# run from software/ with the venv active:
+#   source ~/zephyrproject/.venv/bin/activate
+left_config    = config/prj.conf;config/prj_left.conf
+right_config   = config/prj.conf;config/prj_right.conf
+left_command   = west build -b xiao_ble -p always -d build_left  -- -DCONF_FILE="config/prj.conf;config/prj_left.conf"
+right_command  = west build -b xiao_ble -p always -d build_right -- -DCONF_FILE="config/prj.conf;config/prj_right.conf"
+script         = scripts/run.sh left | right   (builds and copies the UF2 to /run/media/$USER/XIAO-SENSE/)
+flash          = double-tap reset, copy build_<side>/zephyr/zephyr.uf2 to the XIAO-SENSE drive
+
+[size]
+# at the recorded commit
+left_flash     = 296992 B of 788 KB (36.81%)
+left_ram       = 60162 B of 256 KB (22.95%)
+right_flash    = 181064 B of 788 KB (22.44%)
+
+[reproduce]
+# to get the same Zephyr tree:
+#   cd ~/zephyrproject/zephyr && git checkout 920074c07cf4b503f70670cf424e4add4325d05a && west update
